@@ -1,0 +1,199 @@
+const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
+const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+let map;
+let overlay;
+let activePeriod = "24";
+
+const els = {
+  dot: document.querySelector("#statusDot"),
+  status: document.querySelector("#statusText"),
+  refresh: document.querySelector("#refreshButton"),
+  note: document.querySelector("#sourceNote"),
+  quality: document.querySelector("#qualityNotes"),
+  stations: document.querySelector("#stationChecks"),
+  calendar: document.querySelector("#calendar"),
+  bars: document.querySelector("#monthlyBars"),
+  wettest: document.querySelector("#wettestDay")
+};
+
+function inches(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${fmt.format(Number(value))}"`;
+}
+
+function setStatus(text, state = "loading") {
+  els.status.textContent = text;
+  els.dot.className = `dot ${state === "ready" ? "ready" : state === "error" ? "error" : ""}`;
+}
+
+async function loadRainfall(refresh = false) {
+  setStatus(refresh ? "Refreshing data" : "Loading rainfall data");
+  try {
+    const response = await fetch(`/api/summary${refresh ? "?refresh=1" : ""}`);
+    if (!response.ok) throw new Error("Rainfall service did not respond");
+    const data = await response.json();
+    renderCurrent(data.current);
+    renderHistory(data.history);
+    setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
+    updateMap(activePeriod);
+  } catch (error) {
+    setStatus(error.message || "Unable to load data", "error");
+  }
+}
+
+function renderCurrent(current) {
+  for (const period of current.periods) {
+    const target = document.querySelector(`#total${period.hours}`);
+    if (target) target.textContent = inches(period.inches);
+  }
+  const latest = current.periods.find((p) => p.hours === 24) || current.periods[0];
+  const validTimes = [...new Set(current.periods.map((p) => p.validEndTime).filter(Boolean))];
+  const valid = validTimes.length ? new Date(Math.max(...validTimes)) : null;
+  const synced = validTimes.length <= 1;
+  els.note.textContent = valid
+    ? `NOAA radar totals ${synced ? "are" : "are not all"} valid through the same hour; latest layer is ${valid.toLocaleString()} at roughly ${(latest.resolutionMeters / 1000).toFixed(1)} km sample resolution.`
+    : "NOAA radar totals are live estimates and may be revised.";
+  renderQuality(current);
+}
+
+function renderQuality(current) {
+  els.quality.innerHTML = (current.qualityNotes || [])
+    .map((note) => `<p>${escapeHtml(note)}</p>`)
+    .join("");
+  els.stations.innerHTML = (current.stationChecks || []).map((station) => {
+    const observed = station.lastHourInches === null || station.lastHourInches === undefined
+      ? "No 1h precip report"
+      : `${inches(station.lastHourInches)} in last hour`;
+    const when = station.timestamp
+      ? new Date(station.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : "latest time unavailable";
+    return `<article class="station">
+      <div><strong>${escapeHtml(station.id)} - ${escapeHtml(station.name)}</strong><span>${station.distanceMiles} mi away - ${when}</span></div>
+      <span>${observed}</span>
+    </article>`;
+  }).join("");
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  }[char]));
+}
+
+function renderHistory(history) {
+  document.querySelector("#weekTotal").textContent = inches(history.weekTotal);
+  document.querySelector("#monthTotal").textContent = inches(history.monthTotal);
+  document.querySelector("#yearTotal").textContent = inches(history.annualTotal);
+  if (history.wettestDay) {
+    els.wettest.textContent = `Wettest day: ${formatDateLabel(history.wettestDay.date)} - ${inches(history.wettestDay.inches)}`;
+  }
+  renderBars(history.months);
+  renderCalendar(history.days, history.months);
+}
+
+function renderBars(months) {
+  const max = Math.max(...months.map((m) => m.inches), 0.1);
+  els.bars.innerHTML = months.map((m) => {
+    const height = Math.max(3, (m.inches / max) * 100);
+    const { monthName, year } = splitMonth(m.month);
+    return `<div class="bar" title="${monthName} ${year}: ${inches(m.inches)}">
+      <div class="barFill" style="height:${height}%"></div>
+      <strong>${fmt.format(m.inches)}</strong>
+      <span>${monthName}</span>
+      <em>${year}</em>
+    </div>`;
+  }).join("");
+}
+
+function renderCalendar(days, months) {
+  const byMonth = new Map();
+  for (const day of days) {
+    const key = day.date.slice(0, 7);
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key).push(day);
+  }
+  const monthTotals = new Map(months.map((m) => [m.month, m.inches]));
+  els.calendar.innerHTML = [...byMonth.entries()].map(([month, monthDays]) => {
+    const blanks = weekdayForDateParts(`${month}-01`);
+    const { monthName, year } = splitMonth(month);
+    const cells = Array.from({ length: blanks }, () => `<span class="day empty" aria-hidden="true"></span>`)
+      .concat(monthDays.map((day) => {
+        const dayNumber = Number(day.date.slice(8, 10));
+        const hasRain = Number(day.inches) > 0;
+        return `<span class="day" data-level="${rainLevel(day.inches)}" title="${formatDateLabel(day.date)}: ${inches(day.inches)}">
+          <b>${dayNumber}</b>
+          <small>${hasRain ? fmt.format(day.inches) : ""}</small>
+        </span>`;
+      }))
+      .join("");
+    return `<section class="month">
+      <div class="monthTitle"><span>${monthName} ${year}</span><span>${inches(monthTotals.get(month) || 0)}</span></div>
+      <div class="weekdays" aria-hidden="true"><span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span></div>
+      <div class="days">${cells}</div>
+    </section>`;
+  }).join("");
+}
+
+function rainLevel(value) {
+  if (value >= 2) return 5;
+  if (value >= 1) return 4;
+  if (value >= 0.5) return 3;
+  if (value >= 0.1) return 2;
+  if (value > 0) return 1;
+  return 0;
+}
+
+function splitMonth(month) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return { year, monthName: MONTHS[monthNumber - 1] };
+}
+
+function formatDateLabel(date) {
+  const [year, monthNumber, day] = date.split("-").map(Number);
+  return `${MONTHS[monthNumber - 1]} ${day}, ${year}`;
+}
+
+function weekdayForDateParts(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year, month - 1, day).getDay();
+}
+
+function initMap() {
+  map = L.map("map", {
+    zoomControl: true,
+    scrollWheelZoom: true
+  }).setView([HOME.lat, HOME.lon], 10);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
+  L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(map).bindPopup("227 Tournament Circle");
+}
+
+function updateMap(period) {
+  if (!map) return;
+  activePeriod = period;
+  document.querySelectorAll(".period").forEach((button) => {
+    button.classList.toggle("active", button.dataset.period === period);
+  });
+  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(56000);
+  if (overlay) overlay.remove();
+  overlay = L.imageOverlay(`/api/map-image?period=${period}&t=${Date.now()}`, bounds, { opacity: 0.58, interactive: false });
+  overlay.addTo(map);
+}
+
+document.querySelectorAll(".period").forEach((button) => {
+  button.addEventListener("click", () => updateMap(button.dataset.period));
+});
+
+els.refresh.addEventListener("click", () => loadRainfall(true));
+initMap();
+loadRainfall();

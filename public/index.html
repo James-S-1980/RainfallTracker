@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rainfall Monitor</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <section class="topbar" aria-label="Rainfall summary">
+        <div>
+          <p class="eyebrow">Rainfall monitor</p>
+          <h1>227 Tournament Circle</h1>
+          <p class="subhead">North East, MD 21901</p>
+        </div>
+        <div class="status">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">Loading rainfall data</span>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Rainfall totals">
+        <article class="metric live"><span>1 hour</span><strong id="total1">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric live"><span>6 hours</span><strong id="total6">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric live"><span>12 hours</span><strong id="total12">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric live"><span>24 hours</span><strong id="total24">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric"><span>7 days</span><strong id="weekTotal">--</strong><small>Open-Meteo</small></article>
+        <article class="metric"><span>This month</span><strong id="monthTotal">--</strong><small>Open-Meteo</small></article>
+        <article class="metric"><span>Past year</span><strong id="yearTotal">--</strong><small>Open-Meteo</small></article>
+      </section>
+
+      <section class="content">
+        <div class="panel mapPanel">
+          <div class="panelHead">
+            <div>
+              <h2>Storm Map</h2>
+              <p>Radar-estimated precipitation around the address.</p>
+            </div>
+            <div class="segmented" role="group" aria-label="Map period">
+              <button class="period active" data-period="1">1h</button>
+              <button class="period" data-period="6">6h</button>
+              <button class="period" data-period="12">12h</button>
+              <button class="period" data-period="24">24h</button>
+            </div>
+          </div>
+          <div id="map"></div>
+          <div class="legend" aria-label="Rainfall color legend">
+            <span>Light</span>
+            <i></i>
+            <span>Heavy</span>
+          </div>
+        </div>
+
+        <div class="panel">
+        <div class="panelHead">
+          <div>
+            <h2>Monthly Totals</h2>
+            <p>Daily archive rolled up by month.</p>
+          </div>
+        </div>
+        <div id="monthlyBars" class="bars"></div>
+        <div class="note" id="sourceNote">Waiting for source timestamps.</div>
+        <div class="checkPanel">
+          <h3>Accuracy Check</h3>
+          <div id="qualityNotes" class="qualityNotes"></div>
+          <div id="stationChecks" class="stationChecks"></div>
+        </div>
+      </div>
+      </section>
+
+      <section class="panel calendarPanel">
+        <div class="panelHead">
+          <div>
+            <h2>Past-Year Calendar</h2>
+            <p>Each square is one day. Darker color means more rainfall.</p>
+          </div>
+          <div class="calendarStats">
+            <span id="wettestDay">Wettest day: --</span>
+          </div>
+        </div>
+        <div id="calendar" class="calendar" aria-label="Daily rainfall calendar"></div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
