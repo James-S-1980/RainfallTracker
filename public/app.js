@@ -12,6 +12,8 @@ const els = {
   note: document.querySelector("#sourceNote"),
   quality: document.querySelector("#qualityNotes"),
   stations: document.querySelector("#stationChecks"),
+  forecast: document.querySelector("#forecastTimeline"),
+  forecastPeak: document.querySelector("#forecastPeak"),
   calendar: document.querySelector("#calendar"),
   bars: document.querySelector("#monthlyBars"),
   wettest: document.querySelector("#wettestDay")
@@ -34,6 +36,7 @@ async function loadRainfall(refresh = false) {
     if (!response.ok) throw new Error("Rainfall service did not respond");
     const data = await response.json();
     renderCurrent(data.current);
+    renderForecast(data.forecast);
     renderHistory(data.history);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
     updateMap(activePeriod);
@@ -96,6 +99,38 @@ function renderHistory(history) {
   renderCalendar(history.days, history.months);
 }
 
+function renderForecast(forecast) {
+  if (!forecast?.hours?.length) {
+    els.forecast.innerHTML = `<p class="emptyForecast">No hourly forecast is available right now.</p>`;
+    els.forecastPeak.textContent = "Forecast unavailable";
+    return;
+  }
+  const peak = forecast.peak;
+  els.forecastPeak.textContent = peak
+    ? `Peak: ${peak.precipitationProbability}% at ${formatHour(peak.startTime)}`
+    : "No rain risk reported";
+  els.forecast.innerHTML = forecast.hours.map((hour) => {
+    const probability = Math.max(0, Math.min(100, Number(hour.precipitationProbability) || 0));
+    return `<article class="forecastHour" data-risk="${forecastRisk(probability)}" title="${escapeHtml(hour.shortForecast)}">
+      <span>${formatHour(hour.startTime)}</span>
+      <div class="probabilityTrack"><i style="height:${Math.max(4, probability)}%"></i></div>
+      <strong>${probability}%</strong>
+      <small>${hour.temperature}${escapeHtml(hour.temperatureUnit || "")}</small>
+    </article>`;
+  }).join("");
+}
+
+function formatHour(value) {
+  return new Date(value).toLocaleTimeString([], { hour: "numeric" });
+}
+
+function forecastRisk(probability) {
+  if (probability >= 70) return "high";
+  if (probability >= 40) return "medium";
+  if (probability > 0) return "low";
+  return "none";
+}
+
 function renderBars(months) {
   const max = Math.max(...months.map((m) => m.inches), 0.1);
   els.bars.innerHTML = months.map((m) => {
@@ -112,18 +147,23 @@ function renderBars(months) {
 
 function renderCalendar(days, months) {
   const byMonth = new Map();
+  const dayValues = new Map(days.map((day) => [day.date, day]));
   for (const day of days) {
     const key = day.date.slice(0, 7);
     if (!byMonth.has(key)) byMonth.set(key, []);
     byMonth.get(key).push(day);
   }
   const monthTotals = new Map(months.map((m) => [m.month, m.inches]));
-  els.calendar.innerHTML = [...byMonth.entries()].map(([month, monthDays]) => {
+  els.calendar.innerHTML = [...byMonth.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([month, monthDays]) => {
     const blanks = weekdayForDateParts(`${month}-01`);
     const { monthName, year } = splitMonth(month);
+    const [, monthNumber] = month.split("-").map(Number);
+    const monthLength = daysInMonth(year, monthNumber);
     const cells = Array.from({ length: blanks }, () => `<span class="day empty" aria-hidden="true"></span>`)
-      .concat(monthDays.map((day) => {
-        const dayNumber = Number(day.date.slice(8, 10));
+      .concat(Array.from({ length: monthLength }, (_, index) => {
+        const dayNumber = index + 1;
+        const date = dateKey(year, monthNumber, dayNumber);
+        const day = dayValues.get(date) || { date, inches: 0 };
         const hasRain = Number(day.inches) > 0;
         return `<span class="day" data-level="${rainLevel(day.inches)}" title="${formatDateLabel(day.date)}: ${inches(day.inches)}">
           <b>${dayNumber}</b>
@@ -156,6 +196,14 @@ function splitMonth(month) {
 function formatDateLabel(date) {
   const [year, monthNumber, day] = date.split("-").map(Number);
   return `${MONTHS[monthNumber - 1]} ${day}, ${year}`;
+}
+
+function dateKey(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
 }
 
 function weekdayForDateParts(date) {

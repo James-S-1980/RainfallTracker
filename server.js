@@ -20,6 +20,8 @@ let currentCache = null;
 let currentCacheAt = 0;
 let historyCache = null;
 let historyCacheKey = "";
+let forecastCache = null;
+let forecastCacheAt = 0;
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 
@@ -210,6 +212,33 @@ async function getCurrentTotals(force = false) {
   return currentCache;
 }
 
+async function getRainForecast(force = false) {
+  if (!force && forecastCache && Date.now() - forecastCacheAt < FIFTEEN_MINUTES) return forecastCache;
+  const data = await fetchJson("https://api.weather.gov/gridpoints/LWX/131,107/forecast/hourly");
+  const hours = (data.properties?.periods || []).slice(0, 12).map((period) => ({
+    startTime: period.startTime,
+    endTime: period.endTime,
+    precipitationProbability: Number(period.probabilityOfPrecipitation?.value || 0),
+    temperature: period.temperature,
+    temperatureUnit: period.temperatureUnit,
+    shortForecast: period.shortForecast || "",
+    windSpeed: period.windSpeed || "",
+    windDirection: period.windDirection || "",
+    isDaytime: Boolean(period.isDaytime)
+  }));
+  const peak = [...hours].sort((a, b) => b.precipitationProbability - a.precipitationProbability)[0] || null;
+  forecastCache = {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    updatedAt: data.properties?.updateTime || new Date().toISOString(),
+    source: "NWS hourly forecast",
+    hours,
+    peak
+  };
+  forecastCacheAt = Date.now();
+  return forecastCache;
+}
+
 async function getHistory(force = false) {
   const today = new Date();
   const end = formatDate(today);
@@ -331,10 +360,12 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
+    if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/history") return json(res, 200, await getHistory(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/summary") {
-      const [current, history] = await Promise.all([getCurrentTotals(url.searchParams.get("refresh") === "1"), getHistory(url.searchParams.get("refresh") === "1")]);
-      return json(res, 200, { current, history });
+      const refresh = url.searchParams.get("refresh") === "1";
+      const [current, forecast, history] = await Promise.all([getCurrentTotals(refresh), getRainForecast(refresh), getHistory(refresh)]);
+      return json(res, 200, { current, forecast, history });
     }
     if (url.pathname === "/api/map-image") return redirectMapImage(req, res, url);
     return serveStatic(req, res, url);

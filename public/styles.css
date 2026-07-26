@@ -158,6 +158,76 @@ h3 {
   margin-bottom: 14px;
 }
 
+.forecastPanel {
+  margin-bottom: 14px;
+}
+
+.forecastPeak {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.forecastTimeline {
+  padding: 18px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(58px, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.forecastHour {
+  min-width: 58px;
+  height: 190px;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  gap: 8px;
+  padding: 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcf9;
+  text-align: center;
+}
+
+.forecastHour span,
+.forecastHour small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.forecastHour strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.probabilityTrack {
+  align-self: stretch;
+  width: 18px;
+  margin: 0 auto;
+  display: flex;
+  align-items: end;
+  border-radius: 999px;
+  background: #e8eee9;
+  overflow: hidden;
+}
+
+.probabilityTrack i {
+  display: block;
+  width: 100%;
+  min-height: 4px;
+  border-radius: 999px 999px 0 0;
+  background: #7fae7b;
+}
+
+.forecastHour[data-risk="medium"] .probabilityTrack i { background: #e1b12c; }
+.forecastHour[data-risk="high"] .probabilityTrack i { background: #b23a48; }
+.forecastHour[data-risk="none"] .probabilityTrack i { background: #cfd8d0; }
+
+.emptyForecast {
+  color: var(--muted);
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -409,6 +479,10 @@ h3 {
 
   .content {
     grid-template-columns: 1fr;
+  }
+
+  .forecastTimeline {
+    grid-template-columns: repeat(12, 66px);
   }
 }
 
