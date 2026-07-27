@@ -158,6 +158,143 @@ h3 {
   margin-bottom: 14px;
 }
 
+.weatherPanel {
+  margin-bottom: 14px;
+}
+
+.weatherSource {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.weatherGrid {
+  padding: 18px;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.25fr);
+  gap: 14px;
+}
+
+.currentWeather,
+.weatherDay {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcf9;
+}
+
+.currentWeather {
+  padding: 16px;
+}
+
+.currentWeather > span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.currentWeather > strong {
+  display: block;
+  margin: 8px 0 18px;
+  font-size: clamp(1.35rem, 2.5vw, 2rem);
+  line-height: 1.1;
+}
+
+.weatherFacts {
+  display: grid;
+  gap: 10px;
+}
+
+.weatherFacts span {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.weatherFacts b {
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
+.weatherFacts small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.dailyWeather {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.weatherDay {
+  min-width: 0;
+  padding: 12px;
+  border-top: 4px solid #cfd8d0;
+}
+
+.weatherDay img {
+  width: 48px;
+  height: 48px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.weatherDay[data-risk="low"] { border-top-color: #7fae7b; }
+.weatherDay[data-risk="medium"] { border-top-color: #e1b12c; }
+.weatherDay[data-risk="high"] { border-top-color: #b23a48; }
+
+.weatherDay strong,
+.weatherDay span {
+  display: block;
+}
+
+.weatherDay strong {
+  margin-bottom: 6px;
+}
+
+.weatherDay span {
+  min-height: 42px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.weatherDay dl {
+  margin: 12px 0 0;
+  display: grid;
+  gap: 7px;
+}
+
+.weatherDay dl div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.weatherDay dt,
+.weatherDay dd {
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+.weatherDay dt {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.weatherDay dd {
+  color: var(--ink);
+  font-weight: 900;
+  text-align: right;
+}
+
 .forecastPanel {
   margin-bottom: 14px;
 }
@@ -464,7 +601,6 @@ h3 {
 .day[data-level="3"] { background: #e6c94d; }
 .day[data-level="4"] { background: #d7763d; }
 .day[data-level="5"] { background: #9e3148; }
-
 .leaflet-marker-icon.homeMarker {
   border-radius: 50%;
   background: #15231f;
@@ -479,6 +615,15 @@ h3 {
 
   .content {
     grid-template-columns: 1fr;
+  }
+
+  .weatherGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .dailyWeather {
+    grid-template-columns: repeat(5, minmax(170px, 1fr));
+    overflow-x: auto;
   }
 
   .forecastTimeline {

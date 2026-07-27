@@ -22,8 +22,13 @@ let historyCache = null;
 let historyCacheKey = "";
 let forecastCache = null;
 let forecastCacheAt = 0;
+let weatherCache = null;
+let weatherCacheAt = 0;
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
+const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
+const HOURLY_FORECAST = `${FORECAST_GRID}/forecast/hourly`;
 
 function send(res, status, body, type = "application/json") {
   res.writeHead(status, {
@@ -50,7 +55,7 @@ function mime(file) {
 }
 
 function formatDate(date) {
-  return date.toISOString().slice(0, 10);
+  return localDateKey(date);
 }
 
 function addDays(date, days) {
@@ -161,6 +166,136 @@ function mmToInches(value) {
   return Number.isFinite(mm) ? Number((mm / 25.4).toFixed(3)) : null;
 }
 
+function cToF(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const celsius = Number(value);
+  return Number.isFinite(celsius) ? Math.round((celsius * 9 / 5) + 32) : null;
+}
+
+function kmhToMph(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const kmh = Number(value);
+  return Number.isFinite(kmh) ? Math.round(kmh * 0.621371) : null;
+}
+
+function degreesToCompass(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const degrees = Number(value);
+  if (!Number.isFinite(degrees)) return null;
+  const directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+  return directions[Math.round(degrees / 22.5) % 16];
+}
+
+function localDateKey(value) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(value));
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+function addDateDays(dateKeyValue, days) {
+  const [year, month, day] = dateKeyValue.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days, 12));
+  return date.toISOString().slice(0, 10);
+}
+
+function parseDurationHours(duration) {
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?$/.exec(duration || "");
+  if (!match) return 1;
+  return Number(match[1] || 0) + Number(match[2] || 0) / 60;
+}
+
+function expandGridValues(values = [], transform = (value) => value) {
+  const expanded = [];
+  for (const entry of values) {
+    const [startText, durationText] = String(entry.validTime || "").split("/");
+    const hours = Math.max(1, Math.round(parseDurationHours(durationText)));
+    const start = new Date(startText);
+    for (let index = 0; index < hours; index += 1) {
+      const time = new Date(start.getTime() + index * 60 * 60 * 1000);
+      expanded.push({
+        time: time.toISOString(),
+        date: localDateKey(time),
+        value: transform(entry.value)
+      });
+    }
+  }
+  return expanded;
+}
+
+function currentGridValue(expandedValues) {
+  const now = Date.now();
+  return expandedValues.find((entry) => new Date(entry.time).getTime() >= now)?.value ?? expandedValues.at(-1)?.value ?? null;
+}
+
+function aggregatePrecipitationByDate(values = []) {
+  const totals = new Map();
+  for (const entry of values) {
+    const totalInches = mmToInches(entry.value);
+    if (totalInches === null) continue;
+    const [startText, durationText] = String(entry.validTime || "").split("/");
+    const hours = Math.max(1, Math.round(parseDurationHours(durationText)));
+    const perHour = totalInches / hours;
+    const start = new Date(startText);
+    for (let index = 0; index < hours; index += 1) {
+      const time = new Date(start.getTime() + index * 60 * 60 * 1000);
+      const date = localDateKey(time);
+      totals.set(date, Number(((totals.get(date) || 0) + perHour).toFixed(3)));
+    }
+  }
+  return totals;
+}
+
+function extractRainAmountText(forecastText) {
+  const text = forecastText || "";
+  const match = text.match(/New rainfall amounts? ([^.]+ possible)\./i);
+  return match ? match[1] : "";
+}
+
+function buildDailyWeather(periods, grid) {
+  const byDate = new Map();
+  for (const period of periods) {
+    const date = localDateKey(period.startTime);
+    const day = byDate.get(date) || {
+      date,
+      high: null,
+      low: null,
+      precipitationProbability: 0,
+      rainText: "",
+      summary: "",
+      icon: "",
+      periods: []
+    };
+    if (period.isDaytime) day.high = period.temperature;
+    else day.low = period.temperature;
+    day.precipitationProbability = Math.max(day.precipitationProbability, Number(period.probabilityOfPrecipitation?.value || 0));
+    day.summary = day.summary || period.shortForecast || "";
+    if (period.isDaytime || !day.icon) day.icon = period.icon || day.icon;
+    day.rainText = day.rainText || extractRainAmountText(period.detailedForecast);
+    day.periods.push({
+      name: period.name,
+      isDaytime: period.isDaytime,
+      temperature: period.temperature,
+      shortForecast: period.shortForecast || "",
+      precipitationProbability: Number(period.probabilityOfPrecipitation?.value || 0),
+      windSpeed: period.windSpeed || "",
+      windDirection: period.windDirection || ""
+    });
+    byDate.set(date, day);
+  }
+
+  const qpfByDate = aggregatePrecipitationByDate(grid.quantitativePrecipitation?.values || []);
+
+  return [...byDate.values()].slice(0, 5).map((day) => ({
+    ...day,
+    projectedRainInches: qpfByDate.has(day.date) ? qpfByDate.get(day.date) : null
+  }));
+}
+
 function buildQualityNotes(periods, stationChecks) {
   const notes = [
     "MRMS point samples are converted from raw millimeters to inches.",
@@ -214,7 +349,7 @@ async function getCurrentTotals(force = false) {
 
 async function getRainForecast(force = false) {
   if (!force && forecastCache && Date.now() - forecastCacheAt < FIFTEEN_MINUTES) return forecastCache;
-  const data = await fetchJson("https://api.weather.gov/gridpoints/LWX/131,107/forecast/hourly");
+  const data = await fetchJson(HOURLY_FORECAST);
   const hours = (data.properties?.periods || []).slice(0, 12).map((period) => ({
     startTime: period.startTime,
     endTime: period.endTime,
@@ -237,6 +372,55 @@ async function getRainForecast(force = false) {
   };
   forecastCacheAt = Date.now();
   return forecastCache;
+}
+
+async function getWeatherReport(force = false) {
+  if (!force && weatherCache && Date.now() - weatherCacheAt < FIFTEEN_MINUTES) return weatherCache;
+  const [daily, grid, latestObservation] = await Promise.all([
+    fetchJson(DAILY_FORECAST),
+    fetchJson(FORECAST_GRID),
+    fetchJson("https://api.weather.gov/stations/K0W3/observations/latest")
+  ]);
+  const observation = latestObservation.properties || {};
+  const today = localDateKey(new Date());
+  const temperatures = expandGridValues(grid.properties?.temperature?.values || [], cToF).filter((entry) => entry.date === today && entry.value !== null);
+  const todaysHigh = temperatures.length ? Math.max(...temperatures.map((entry) => entry.value)) : null;
+  const todaysLow = temperatures.length ? Math.min(...temperatures.map((entry) => entry.value)) : null;
+  const periods = daily.properties?.periods || [];
+  const currentPeriod = periods[0] || {};
+  const currentTemperature = cToF(observation.temperature?.value) ?? currentGridValue(expandGridValues(grid.properties?.temperature?.values || [], cToF));
+  const currentWindSpeed = kmhToMph(observation.windSpeed?.value);
+  const currentWindDirection = degreesToCompass(observation.windDirection?.value);
+  const currentHumidity = observation.relativeHumidity?.value === null || observation.relativeHumidity?.value === undefined
+    ? null
+    : Math.round(Number(observation.relativeHumidity.value));
+
+  weatherCache = {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    updatedAt: daily.properties?.updateTime || new Date().toISOString(),
+    source: "NWS forecast and K0W3 latest observation",
+    current: {
+      conditions: observation.textDescription || currentPeriod.shortForecast || "",
+      temperature: currentTemperature,
+      station: observation.stationName || "Harford County Airport",
+      observedAt: observation.timestamp || null,
+      windSpeedMph: currentWindSpeed,
+      windDirection: currentWindDirection,
+      windGustMph: kmhToMph(observation.windGust?.value),
+      humidity: Number.isFinite(currentHumidity) ? currentHumidity : null
+    },
+    today: {
+      date: today,
+      high: todaysHigh,
+      low: todaysLow,
+      wind: `${currentPeriod.windDirection || ""} ${currentPeriod.windSpeed || ""}`.trim(),
+      summary: currentPeriod.shortForecast || ""
+    },
+    daily: buildDailyWeather(periods, grid.properties || {})
+  };
+  weatherCacheAt = Date.now();
+  return weatherCache;
 }
 
 async function getHistory(force = false) {
@@ -361,11 +545,12 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
+    if (url.pathname === "/api/weather") return json(res, 200, await getWeatherReport(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/history") return json(res, 200, await getHistory(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/summary") {
       const refresh = url.searchParams.get("refresh") === "1";
-      const [current, forecast, history] = await Promise.all([getCurrentTotals(refresh), getRainForecast(refresh), getHistory(refresh)]);
-      return json(res, 200, { current, forecast, history });
+      const [current, forecast, weather, history] = await Promise.all([getCurrentTotals(refresh), getRainForecast(refresh), getWeatherReport(refresh), getHistory(refresh)]);
+      return json(res, 200, { current, forecast, weather, history });
     }
     if (url.pathname === "/api/map-image") return redirectMapImage(req, res, url);
     return serveStatic(req, res, url);

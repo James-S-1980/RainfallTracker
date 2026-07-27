@@ -12,6 +12,12 @@ const els = {
   note: document.querySelector("#sourceNote"),
   quality: document.querySelector("#qualityNotes"),
   stations: document.querySelector("#stationChecks"),
+  weatherUpdated: document.querySelector("#weatherUpdated"),
+  weatherConditions: document.querySelector("#weatherConditions"),
+  weatherTemp: document.querySelector("#weatherTemp"),
+  weatherHighLow: document.querySelector("#weatherHighLow"),
+  weatherWind: document.querySelector("#weatherWind"),
+  dailyWeather: document.querySelector("#dailyWeather"),
   forecast: document.querySelector("#forecastTimeline"),
   forecastPeak: document.querySelector("#forecastPeak"),
   calendar: document.querySelector("#calendar"),
@@ -36,6 +42,7 @@ async function loadRainfall(refresh = false) {
     if (!response.ok) throw new Error("Rainfall service did not respond");
     const data = await response.json();
     renderCurrent(data.current);
+    renderWeather(data.weather);
     renderForecast(data.forecast);
     renderHistory(data.history);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
@@ -97,6 +104,52 @@ function renderHistory(history) {
   }
   renderBars(history.months);
   renderCalendar(history.days, history.months);
+}
+
+function renderWeather(weather) {
+  if (!weather) return;
+  const current = weather.current || {};
+  els.weatherConditions.textContent = current.conditions || "--";
+  els.weatherTemp.textContent = current.temperature === null || current.temperature === undefined ? "--" : `${current.temperature}F`;
+  els.weatherHighLow.textContent = weather.today?.high === null || weather.today?.low === null
+    ? "--"
+    : `${weather.today.high}F / ${weather.today.low}F`;
+  const wind = current.windSpeedMph === null || current.windSpeedMph === undefined
+    ? weather.today?.wind || "--"
+    : `${current.windDirection || ""} ${current.windSpeedMph} mph${current.windGustMph ? ` gust ${current.windGustMph}` : ""}`.trim();
+  els.weatherWind.textContent = wind;
+  els.weatherUpdated.textContent = weather.updatedAt
+    ? `Updated ${new Date(weather.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : "NWS weather";
+  els.dailyWeather.innerHTML = (weather.daily || []).map((day) => {
+    const rain = projectedRainLabel(day);
+    return `<article class="weatherDay" data-risk="${forecastRisk(day.precipitationProbability || 0)}">
+      ${day.icon ? `<img src="${escapeHtml(day.icon)}" alt="${escapeHtml(day.summary || "Weather icon")}" loading="lazy">` : ""}
+      <div>
+        <strong>${formatDayName(day.date)}</strong>
+        <span>${escapeHtml(day.summary || "--")}</span>
+      </div>
+      <dl>
+        <div><dt>High</dt><dd>${day.high ?? "--"}F</dd></div>
+        <div><dt>Low</dt><dd>${day.low ?? "--"}F</dd></div>
+        <div><dt>Rain</dt><dd>${day.precipitationProbability ?? 0}%</dd></div>
+        <div><dt>Amount</dt><dd>${rain}</dd></div>
+      </dl>
+    </article>`;
+  }).join("");
+}
+
+function projectedRainLabel(day) {
+  if (Number(day.precipitationProbability || 0) <= 0) return "None";
+  if (day.projectedRainInches !== null && day.projectedRainInches !== undefined) {
+    return `${fmt.format(day.projectedRainInches)}"`;
+  }
+  return day.rainText ? escapeHtml(day.rainText) : "Amount unavailable";
+}
+
+function formatDayName(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 }
 
 function renderForecast(forecast) {

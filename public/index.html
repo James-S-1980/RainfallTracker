@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Rainfall Monitor</title>
+    <title>Weather and Rainfall</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -11,7 +11,7 @@
     <main class="app">
       <section class="topbar" aria-label="Rainfall summary">
         <div>
-          <p class="eyebrow">Rainfall monitor</p>
+          <p class="eyebrow">Weather and Rainfall</p>
           <h1>227 Tournament Circle</h1>
           <p class="subhead">North East, MD 21901</p>
         </div>
@@ -30,6 +30,28 @@
         <article class="metric"><span>7 days</span><strong id="weekTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>This month</span><strong id="monthTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>Past year</span><strong id="yearTotal">--</strong><small>Open-Meteo</small></article>
+      </section>
+
+      <section class="panel weatherPanel" aria-label="North East Maryland weather report">
+        <div class="panelHead">
+          <div>
+            <h2>Weather Report</h2>
+            <p>Current conditions and 5-day projection for North East, MD.</p>
+          </div>
+          <div class="weatherSource" id="weatherUpdated">Weather loading</div>
+        </div>
+        <div class="weatherGrid">
+          <article class="currentWeather">
+            <span>Current conditions</span>
+            <strong id="weatherConditions">--</strong>
+            <div class="weatherFacts">
+              <span><b id="weatherTemp">--</b><small>Current temp</small></span>
+              <span><b id="weatherHighLow">--</b><small>High / low today</small></span>
+              <span><b id="weatherWind">--</b><small>Wind</small></span>
+            </div>
+          </article>
+          <div id="dailyWeather" class="dailyWeather"></div>
+        </div>
       </section>
 
       <section class="panel forecastPanel" aria-label="Next 12 hours rain probability">
