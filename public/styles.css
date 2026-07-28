@@ -162,6 +162,41 @@ h3 {
   margin-bottom: 14px;
 }
 
+.radarPanel {
+  margin-bottom: 14px;
+}
+
+.radarTime {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.radarFrame {
+  position: relative;
+}
+
+#radarMap {
+  height: 360px;
+  background: #dfe9ec;
+}
+
+.radarBadge {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 500;
+  padding: 8px 10px;
+  border: 1px solid rgba(21, 35, 31, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 900;
+  box-shadow: 0 8px 24px rgba(21, 35, 31, 0.14);
+  pointer-events: none;
+}
+
 .weatherSource {
   color: var(--muted);
   font-size: 0.84rem;
@@ -195,9 +230,16 @@ h3 {
 
 .currentWeather > strong {
   display: block;
-  margin: 8px 0 18px;
+  margin: 8px 0 6px;
   font-size: clamp(1.35rem, 2.5vw, 2rem);
   line-height: 1.1;
+}
+
+.weatherStation {
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .weatherFacts {

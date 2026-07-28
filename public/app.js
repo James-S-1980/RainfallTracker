@@ -2,7 +2,9 @@ const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let map;
+let radarMap;
 let overlay;
+let radarOverlay;
 let activePeriod = "24";
 
 const els = {
@@ -17,7 +19,9 @@ const els = {
   weatherTemp: document.querySelector("#weatherTemp"),
   weatherHighLow: document.querySelector("#weatherHighLow"),
   weatherWind: document.querySelector("#weatherWind"),
+  weatherStation: document.querySelector("#weatherStation"),
   dailyWeather: document.querySelector("#dailyWeather"),
+  radarTime: document.querySelector("#radarTime"),
   forecast: document.querySelector("#forecastTimeline"),
   forecastPeak: document.querySelector("#forecastPeak"),
   calendar: document.querySelector("#calendar"),
@@ -43,6 +47,7 @@ async function loadRainfall(refresh = false) {
     const data = await response.json();
     renderCurrent(data.current);
     renderWeather(data.weather);
+    renderRadar(data.radar);
     renderForecast(data.forecast);
     renderHistory(data.history);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
@@ -110,6 +115,9 @@ function renderWeather(weather) {
   if (!weather) return;
   const current = weather.current || {};
   els.weatherConditions.textContent = current.conditions || "--";
+  els.weatherStation.textContent = current.station
+    ? `${current.station}${current.observedAt ? ` at ${new Date(current.observedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
+    : "NWS observation";
   els.weatherTemp.textContent = current.temperature === null || current.temperature === undefined ? "--" : `${current.temperature}F`;
   els.weatherHighLow.textContent = weather.today?.high === null || weather.today?.low === null
     ? "--"
@@ -118,8 +126,10 @@ function renderWeather(weather) {
     ? weather.today?.wind || "--"
     : `${current.windDirection || ""} ${current.windSpeedMph} mph${current.windGustMph ? ` gust ${current.windGustMph}` : ""}`.trim();
   els.weatherWind.textContent = wind;
-  els.weatherUpdated.textContent = weather.updatedAt
-    ? `Updated ${new Date(weather.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+  els.weatherUpdated.textContent = current.observedAt
+    ? `Observed ${new Date(current.observedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : weather.forecastUpdatedAt
+      ? `Forecast updated ${new Date(weather.forecastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
     : "NWS weather";
   els.dailyWeather.innerHTML = (weather.daily || []).map((day) => {
     const rain = projectedRainLabel(day);
@@ -137,6 +147,18 @@ function renderWeather(weather) {
       </dl>
     </article>`;
   }).join("");
+}
+
+function renderRadar(radar) {
+  if (!radar || !radarMap) return;
+  els.radarTime.textContent = radar.updatedAt
+    ? `Radar ${new Date(radar.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : "NOAA radar";
+  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(68000);
+  if (radarOverlay) radarOverlay.remove();
+  const radarTime = radar.validTime ? `time=${encodeURIComponent(radar.validTime)}&` : "";
+  radarOverlay = L.imageOverlay(`/api/radar-image?${radarTime}t=${Date.now()}`, bounds, { opacity: 0.72, interactive: false });
+  radarOverlay.addTo(radarMap);
 }
 
 function projectedRainLabel(day) {
@@ -279,6 +301,23 @@ function initMap() {
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(map).bindPopup("227 Tournament Circle");
 }
 
+function initRadarMap() {
+  radarMap = L.map("radarMap", {
+    zoomControl: false,
+    dragging: true,
+    scrollWheelZoom: false,
+    doubleClickZoom: false
+  }).setView([HOME.lat, HOME.lon], 9);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(radarMap);
+
+  const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
+  L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(radarMap).bindPopup("227 Tournament Circle");
+}
+
 function updateMap(period) {
   if (!map) return;
   activePeriod = period;
@@ -297,4 +336,5 @@ document.querySelectorAll(".period").forEach((button) => {
 
 els.refresh.addEventListener("click", () => loadRainfall(true));
 initMap();
+initRadarMap();
 loadRainfall();

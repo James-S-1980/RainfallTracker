@@ -44,6 +44,7 @@
           <article class="currentWeather">
             <span>Current conditions</span>
             <strong id="weatherConditions">--</strong>
+            <p id="weatherStation" class="weatherStation">Station loading</p>
             <div class="weatherFacts">
               <span><b id="weatherTemp">--</b><small>Current temp</small></span>
               <span><b id="weatherHighLow">--</b><small>High / low today</small></span>
@@ -51,6 +52,20 @@
             </div>
           </article>
           <div id="dailyWeather" class="dailyWeather"></div>
+        </div>
+      </section>
+
+      <section class="panel radarPanel" aria-label="Current radar picture for the house">
+        <div class="panelHead">
+          <div>
+            <h2>Current Radar</h2>
+            <p>Base reflectivity centered on the house.</p>
+          </div>
+          <div class="radarTime" id="radarTime">Radar loading</div>
+        </div>
+        <div class="radarFrame">
+          <div id="radarMap"></div>
+          <div class="radarBadge">227 Tournament Circle</div>
         </div>
       </section>
 
@@ -108,7 +123,7 @@
         <div class="panelHead">
           <div>
             <h2>Past-Year Calendar</h2>
-            <p>Each square is one day. Darker color means more rainfall.</p>
+            <p>Completed-day actual rainfall. Today stays blank until final data is available.</p>
           </div>
           <div class="calendarStats">
             <span id="wettestDay">Wettest day: --</span>

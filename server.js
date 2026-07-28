@@ -8,6 +8,7 @@ const ADDRESS = "227 Tournament Circle, North East, MD 21901";
 const LAT = 39.575348823737;
 const LON = -75.933586373761;
 const MRMS = "https://mapservices.weather.noaa.gov/raster/rest/services/obs/mrms_qpe/ImageServer";
+const RADAR = "https://mapservices.weather.noaa.gov/eventdriven/rest/services/radar/radar_base_reflectivity_time/ImageServer";
 const NWS_HEADERS = { "user-agent": "rainfall-monitor/1.0 contact: local-user" };
 const PERIODS = {
   "1": "conus_QPE_01H",
@@ -24,6 +25,8 @@ let forecastCache = null;
 let forecastCacheAt = 0;
 let weatherCache = null;
 let weatherCacheAt = 0;
+let radarCache = null;
+let radarCacheAt = 0;
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
@@ -399,6 +402,7 @@ async function getWeatherReport(force = false) {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
     updatedAt: daily.properties?.updateTime || new Date().toISOString(),
+    forecastUpdatedAt: daily.properties?.updateTime || null,
     source: "NWS forecast and K0W3 latest observation",
     current: {
       conditions: observation.textDescription || currentPeriod.shortForecast || "",
@@ -423,10 +427,26 @@ async function getWeatherReport(force = false) {
   return weatherCache;
 }
 
+async function getRadarSnapshot(force = false) {
+  if (!force && radarCache && Date.now() - radarCacheAt < FIFTEEN_MINUTES) return radarCache;
+  const data = await fetchJson(`${RADAR}?f=pjson`);
+  const validTime = data.timeInfo?.timeExtent?.[1] || null;
+  radarCache = {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    source: "NOAA radar base reflectivity",
+    updatedAt: validTime ? new Date(validTime).toISOString() : new Date().toISOString(),
+    validTime,
+    updateFrequency: "About every 5 minutes"
+  };
+  radarCacheAt = Date.now();
+  return radarCache;
+}
+
 async function getHistory(force = false) {
-  const today = new Date();
-  const end = formatDate(today);
-  const start = formatDate(addDays(today, -365));
+  const today = localDateKey(new Date());
+  const end = addDateDays(today, -1);
+  const start = addDateDays(end, -365);
   const key = `${start}:${end}`;
   if (!force && historyCache && historyCacheKey === key && Date.now() - historyCache.fetchedAtMs < SIX_HOURS) {
     return historyCache.payload;
@@ -524,6 +544,32 @@ async function redirectMapImage(req, res, url) {
   res.end();
 }
 
+async function redirectRadarImage(req, res, url) {
+  const radar = await getRadarSnapshot();
+  const requestedTime = Number(url.searchParams.get("time"));
+  const radarTime = Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime;
+  const center = webMercator(LON, LAT);
+  const radius = Number(url.searchParams.get("radius") || 55000);
+  const bbox = [
+    center.x - radius,
+    center.y - radius,
+    center.x + radius,
+    center.y + radius
+  ].join(",");
+  const exportUrl = `${RADAR}/exportImage?${toQuery({
+    f: "image",
+    bbox,
+    bboxSR: "102100",
+    imageSR: "102100",
+    size: "1000,1000",
+    format: "png32",
+    transparent: "true",
+    ...(radarTime ? { time: String(radarTime) } : {})
+  })}`;
+  res.writeHead(302, { location: exportUrl, "cache-control": "no-store" });
+  res.end();
+}
+
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/index.html";
@@ -546,13 +592,15 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/weather") return json(res, 200, await getWeatherReport(url.searchParams.get("refresh") === "1"));
+    if (url.pathname === "/api/radar") return json(res, 200, await getRadarSnapshot(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/history") return json(res, 200, await getHistory(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/summary") {
       const refresh = url.searchParams.get("refresh") === "1";
-      const [current, forecast, weather, history] = await Promise.all([getCurrentTotals(refresh), getRainForecast(refresh), getWeatherReport(refresh), getHistory(refresh)]);
-      return json(res, 200, { current, forecast, weather, history });
+      const [current, forecast, weather, radar, history] = await Promise.all([getCurrentTotals(refresh), getRainForecast(refresh), getWeatherReport(refresh), getRadarSnapshot(refresh), getHistory(refresh)]);
+      return json(res, 200, { current, forecast, weather, radar, history });
     }
     if (url.pathname === "/api/map-image") return redirectMapImage(req, res, url);
+    if (url.pathname === "/api/radar-image") return redirectRadarImage(req, res, url);
     return serveStatic(req, res, url);
   } catch (error) {
     json(res, 502, { error: error.message || "Unable to fetch rainfall data right now." });
