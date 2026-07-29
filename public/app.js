@@ -28,6 +28,8 @@ const els = {
   radarTime: document.querySelector("#radarTime"),
   forecast: document.querySelector("#forecastTimeline"),
   forecastPeak: document.querySelector("#forecastPeak"),
+  trends: document.querySelector("#trendCards"),
+  trendsUpdated: document.querySelector("#trendsUpdated"),
   calendar: document.querySelector("#calendar"),
   bars: document.querySelector("#monthlyBars"),
   wettest: document.querySelector("#wettestDay")
@@ -59,6 +61,7 @@ async function loadRainfall(refresh = false) {
     renderRadar(data.radar);
     renderForecast(data.forecast);
     renderHistory(data.history);
+    renderTrends(data);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
     updateMap(activePeriod);
     loadRateHistory(refresh);
@@ -248,6 +251,147 @@ function renderForecast(forecast) {
       <small>${hour.temperature}${escapeHtml(hour.temperatureUnit || "")}</small>
     </article>`;
   }).join("");
+}
+
+function renderTrends(data) {
+  if (!els.trends) return;
+  const history = data.history || {};
+  const days = (history.days || []).filter((day) => Number.isFinite(Number(day.inches)));
+  if (!days.length) {
+    els.trends.innerHTML = `<p class="emptyForecast">Trend data is unavailable right now.</p>`;
+    if (els.trendsUpdated) els.trendsUpdated.textContent = "Waiting for history";
+    return;
+  }
+
+  const current24 = data.current?.periods?.find((period) => period.hours === 24)?.inches ?? null;
+  const last7 = days.slice(-7);
+  const previous7 = days.slice(-14, -7);
+  const last30 = days.slice(-30);
+  const last90 = days.slice(-90);
+  const last7Total = sumInches(last7);
+  const previous7Total = sumInches(previous7);
+  const rainy30 = countRainDays(last30, 0.01);
+  const rainy90 = countRainDays(last90, 0.01);
+  const soakingYear = countRainDays(days, 0.5);
+  const heavyYear = countRainDays(days, 1);
+  const dryStreak = trailingStreak(days, (day) => Number(day.inches) <= 0.01);
+  const wetStreak = trailingStreak(days, (day) => Number(day.inches) > 0.01);
+  const monthRank = rankCurrentMonth(history.months || []);
+  const currentMonth = (history.months || []).at(-1);
+  const dailyRank = rankDailyAmount(days, current24);
+  const forecastStats = summarizeForecast(data.weather);
+  const mrmsDays = days.filter((day) => String(day.source || "").includes("MRMS")).length;
+
+  const cards = [
+    {
+      label: "Recent pace",
+      value: inches(last7Total),
+      detail: `${compareTotals(last7Total, previous7Total)} vs prior 7 days`,
+      tone: last7Total >= previous7Total ? "wet" : "dry"
+    },
+    {
+      label: "Rainy days",
+      value: `${rainy30} of 30`,
+      detail: `${rainy90} days with measurable rain in the last 90 days`,
+      tone: rainy30 >= 10 ? "wet" : "neutral"
+    },
+    {
+      label: "Bigger events",
+      value: `${soakingYear}`,
+      detail: `${heavyYear} days reached 1.00"+ in the past year`,
+      tone: heavyYear > 0 ? "storm" : "neutral"
+    },
+    {
+      label: dryStreak ? "Dry streak" : "Wet streak",
+      value: `${dryStreak || wetStreak} ${pluralize("day", dryStreak || wetStreak)}`,
+      detail: dryStreak ? "Completed days at or below 0.01\"" : "Completed days with measurable rain",
+      tone: dryStreak >= 5 ? "dry" : wetStreak >= 2 ? "wet" : "neutral"
+    },
+    {
+      label: "Month context",
+      value: currentMonth ? inches(currentMonth.inches) : "--",
+      detail: monthRank ? `Ranks #${monthRank.rank} of ${monthRank.total} visible months by rainfall` : "Monthly context unavailable",
+      tone: monthRank?.rank <= 3 ? "wet" : "neutral"
+    },
+    {
+      label: "Storm context",
+      value: current24 === null ? "--" : inches(current24),
+      detail: dailyRank ? `Would rank around #${dailyRank.rank} of ${dailyRank.total} daily totals shown` : "24-hour context unavailable",
+      tone: current24 >= 1 ? "storm" : current24 > 0.1 ? "wet" : "neutral"
+    },
+    {
+      label: "Forecast lean",
+      value: forecastStats.rainDays === null ? "--" : `${forecastStats.rainDays} ${pluralize("day", forecastStats.rainDays)}`,
+      detail: forecastStats.detail,
+      tone: forecastStats.rainDays >= 3 ? "wet" : "neutral"
+    },
+    {
+      label: "Data blend",
+      value: `${mrmsDays}`,
+      detail: "Recent calendar days use MRMS radar totals when available",
+      tone: "neutral"
+    }
+  ];
+
+  if (els.trendsUpdated) {
+    els.trendsUpdated.textContent = `${days.length} completed days analyzed`;
+  }
+  els.trends.innerHTML = cards.map((card) => `<article class="trendCard" data-tone="${card.tone}">
+    <span>${escapeHtml(card.label)}</span>
+    <strong>${escapeHtml(card.value)}</strong>
+    <p>${escapeHtml(card.detail)}</p>
+  </article>`).join("");
+}
+
+function sumInches(days) {
+  return Number(days.reduce((total, day) => total + (Number(day.inches) || 0), 0).toFixed(3));
+}
+
+function countRainDays(days, threshold) {
+  return days.filter((day) => Number(day.inches) >= threshold).length;
+}
+
+function trailingStreak(days, predicate) {
+  let count = 0;
+  for (let index = days.length - 1; index >= 0; index -= 1) {
+    if (!predicate(days[index])) break;
+    count += 1;
+  }
+  return count;
+}
+
+function compareTotals(current, previous) {
+  const delta = Number((current - previous).toFixed(2));
+  if (Math.abs(delta) < 0.01) return "About even";
+  return `${inches(Math.abs(delta))} ${delta > 0 ? "wetter" : "drier"}`;
+}
+
+function rankCurrentMonth(months) {
+  const current = months.at(-1);
+  if (!current) return null;
+  const sorted = [...months].sort((a, b) => b.inches - a.inches);
+  return { rank: sorted.findIndex((month) => month.month === current.month) + 1, total: sorted.length };
+}
+
+function rankDailyAmount(days, amount) {
+  if (amount === null || amount === undefined || Number.isNaN(Number(amount))) return null;
+  const totals = [...days.map((day) => Number(day.inches) || 0), Number(amount)].sort((a, b) => b - a);
+  return { rank: totals.findIndex((value) => value <= Number(amount)) + 1, total: totals.length };
+}
+
+function summarizeForecast(weather) {
+  const days = weather?.daily || [];
+  if (!days.length) return { rainDays: null, detail: "Forecast context unavailable" };
+  const rainDays = days.filter((day) => Number(day.precipitationProbability || 0) >= 40).length;
+  const projected = Number(days.reduce((total, day) => total + (Number(day.projectedRainInches) || 0), 0).toFixed(2));
+  const highs = days.map((day) => Number(day.high)).filter(Number.isFinite);
+  const highRange = highs.length ? `${Math.min(...highs)}-${Math.max(...highs)}F highs` : "temperature trend unavailable";
+  const rainText = projected > 0 ? `${inches(projected)} projected rain` : "little projected rain";
+  return { rainDays, detail: `${rainText}; ${highRange}` };
+}
+
+function pluralize(word, count) {
+  return Number(count) === 1 ? word : `${word}s`;
 }
 
 function formatHour(value) {

@@ -645,6 +645,68 @@ h3 {
   border-left: 3px solid #d7b84d;
 }
 
+.trendsPanel {
+  margin-bottom: 14px;
+}
+
+.trendsUpdated {
+  color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.trendCards {
+  padding: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trendCard {
+  min-height: 130px;
+  padding: 14px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-top: 4px solid #9facaa;
+  border-radius: 8px;
+  background: #fafcf9;
+}
+
+.trendCard[data-tone="wet"] {
+  border-top-color: var(--green);
+}
+
+.trendCard[data-tone="dry"] {
+  border-top-color: #9facaa;
+}
+
+.trendCard[data-tone="storm"] {
+  border-top-color: var(--red);
+}
+
+.trendCard span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.trendCard strong {
+  color: var(--ink);
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  line-height: 1;
+}
+
+.trendCard p {
+  align-self: end;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .calendarPanel {
   padding-bottom: 18px;
 }
@@ -784,6 +846,10 @@ h3 {
   .rateHistoryChart {
     grid-template-columns: repeat(13, 62px);
   }
+
+  .trendCards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -809,6 +875,10 @@ h3 {
 
   .metric {
     min-height: 104px;
+  }
+
+  .trendCards {
+    grid-template-columns: 1fr;
   }
 
   #map {
