@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Rainfall Monitor</title>
+    <title>Weather and Rainfall</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -11,7 +11,7 @@
     <main class="app">
       <section class="topbar" aria-label="Rainfall summary">
         <div>
-          <p class="eyebrow">Rainfall monitor</p>
+          <p class="eyebrow">Weather and Rainfall</p>
           <h1>227 Tournament Circle</h1>
           <p class="subhead">North East, MD 21901</p>
         </div>
@@ -23,13 +23,62 @@
       </section>
 
       <section class="metrics" aria-label="Rainfall totals">
-        <article class="metric live"><span>1 hour</span><strong id="total1">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric live"><span>1 hour</span><strong id="total1">--</strong><small id="total1Source">NOAA MRMS</small></article>
+        <article class="metric live"><span>Live rate</span><strong id="rainRate">--</strong><small id="rainRateSource">NOAA MRMS</small></article>
         <article class="metric live"><span>6 hours</span><strong id="total6">--</strong><small>NOAA MRMS</small></article>
         <article class="metric live"><span>12 hours</span><strong id="total12">--</strong><small>NOAA MRMS</small></article>
         <article class="metric live"><span>24 hours</span><strong id="total24">--</strong><small>NOAA MRMS</small></article>
         <article class="metric"><span>7 days</span><strong id="weekTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>This month</span><strong id="monthTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>Past year</span><strong id="yearTotal">--</strong><small>Open-Meteo</small></article>
+      </section>
+
+      <section class="panel rateHistoryPanel" aria-label="Last two hours rain rate history">
+        <div class="panelHead">
+          <div>
+            <h2>Rain Rate History</h2>
+            <p>Rapid MRMS rain-rate snapshots over the last 2 hours.</p>
+          </div>
+          <div class="rateHistoryUpdated" id="rateHistoryUpdated">Rate history loading</div>
+        </div>
+        <div id="rateHistoryChart" class="rateHistoryChart"></div>
+      </section>
+
+      <section class="panel weatherPanel" aria-label="North East Maryland weather report">
+        <div class="panelHead">
+          <div>
+            <h2>Weather Report</h2>
+            <p>Current conditions and 5-day projection for North East, MD.</p>
+          </div>
+          <div class="weatherSource" id="weatherUpdated">Weather loading</div>
+        </div>
+        <div class="weatherGrid">
+          <article class="currentWeather">
+            <span>Current conditions</span>
+            <strong id="weatherConditions">--</strong>
+            <p id="weatherStation" class="weatherStation">Station loading</p>
+            <div class="weatherFacts">
+              <span><b id="weatherTemp">--</b><small>Current temp</small></span>
+              <span><b id="weatherHighLow">--</b><small>High / low today</small></span>
+              <span><b id="weatherWind">--</b><small>Wind</small></span>
+            </div>
+          </article>
+          <div id="dailyWeather" class="dailyWeather"></div>
+        </div>
+      </section>
+
+      <section class="panel radarPanel" aria-label="Current radar picture for the house">
+        <div class="panelHead">
+          <div>
+            <h2>Current Radar</h2>
+            <p>Base reflectivity centered on the house.</p>
+          </div>
+          <div class="radarTime" id="radarTime">Radar loading</div>
+        </div>
+        <div class="radarFrame">
+          <div id="radarMap"></div>
+          <div class="radarBadge">227 Tournament Circle</div>
+        </div>
       </section>
 
       <section class="panel forecastPanel" aria-label="Next 12 hours rain probability">
@@ -75,9 +124,8 @@
         <div id="monthlyBars" class="bars"></div>
         <div class="note" id="sourceNote">Waiting for source timestamps.</div>
         <div class="checkPanel">
-          <h3>Accuracy Check</h3>
+          <h3>Radar Notes</h3>
           <div id="qualityNotes" class="qualityNotes"></div>
-          <div id="stationChecks" class="stationChecks"></div>
         </div>
       </div>
       </section>
@@ -86,7 +134,7 @@
         <div class="panelHead">
           <div>
             <h2>Past-Year Calendar</h2>
-            <p>Each square is one day. Darker color means more rainfall.</p>
+            <p>Completed-day actual rainfall. Today stays blank until final data is available.</p>
           </div>
           <div class="calendarStats">
             <span id="wettestDay">Wettest day: --</span>

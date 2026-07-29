@@ -2,7 +2,9 @@ const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let map;
+let radarMap;
 let overlay;
+let radarOverlay;
 let activePeriod = "24";
 
 const els = {
@@ -11,7 +13,19 @@ const els = {
   refresh: document.querySelector("#refreshButton"),
   note: document.querySelector("#sourceNote"),
   quality: document.querySelector("#qualityNotes"),
-  stations: document.querySelector("#stationChecks"),
+  total1Source: document.querySelector("#total1Source"),
+  rainRate: document.querySelector("#rainRate"),
+  rainRateSource: document.querySelector("#rainRateSource"),
+  rateHistory: document.querySelector("#rateHistoryChart"),
+  rateHistoryUpdated: document.querySelector("#rateHistoryUpdated"),
+  weatherUpdated: document.querySelector("#weatherUpdated"),
+  weatherConditions: document.querySelector("#weatherConditions"),
+  weatherTemp: document.querySelector("#weatherTemp"),
+  weatherHighLow: document.querySelector("#weatherHighLow"),
+  weatherWind: document.querySelector("#weatherWind"),
+  weatherStation: document.querySelector("#weatherStation"),
+  dailyWeather: document.querySelector("#dailyWeather"),
+  radarTime: document.querySelector("#radarTime"),
   forecast: document.querySelector("#forecastTimeline"),
   forecastPeak: document.querySelector("#forecastPeak"),
   calendar: document.querySelector("#calendar"),
@@ -22,6 +36,11 @@ const els = {
 function inches(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
   return `${fmt.format(Number(value))}"`;
+}
+
+function inchesPerHour(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${fmt.format(Number(value))}"/hr`;
 }
 
 function setStatus(text, state = "loading") {
@@ -36,12 +55,28 @@ async function loadRainfall(refresh = false) {
     if (!response.ok) throw new Error("Rainfall service did not respond");
     const data = await response.json();
     renderCurrent(data.current);
+    renderWeather(data.weather);
+    renderRadar(data.radar);
     renderForecast(data.forecast);
     renderHistory(data.history);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
     updateMap(activePeriod);
+    loadRateHistory(refresh);
   } catch (error) {
     setStatus(error.message || "Unable to load data", "error");
+  }
+}
+
+async function loadRateHistory(refresh = false) {
+  if (!els.rateHistory) return;
+  els.rateHistory.innerHTML = `<p class="emptyForecast">Loading rain-rate history.</p>`;
+  try {
+    const response = await fetch(`/api/rain-rate-history${refresh ? "?refresh=1" : ""}`);
+    if (!response.ok) throw new Error("Rain-rate history is unavailable");
+    renderRateHistory(await response.json());
+  } catch (error) {
+    els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
+    if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
   }
 }
 
@@ -50,12 +85,27 @@ function renderCurrent(current) {
     const target = document.querySelector(`#total${period.hours}`);
     if (target) target.textContent = inches(period.inches);
   }
+  const oneHour = current.periods.find((p) => p.hours === 1);
+  if (els.total1Source) {
+    els.total1Source.textContent = oneHour?.rapid ? "Rapid MRMS" : "NOAA MRMS";
+  }
+  if (els.rainRate) {
+    els.rainRate.textContent = inchesPerHour(current.rapid?.rainRate?.inchesPerHour);
+  }
+  if (els.rainRateSource) {
+    els.rainRateSource.textContent = current.rapid?.rainRate?.validTime
+      ? `Rapid MRMS ${new Date(current.rapid.rainRate.validTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "Rapid MRMS";
+  }
   const latest = current.periods.find((p) => p.hours === 24) || current.periods[0];
   const validTimes = [...new Set(current.periods.map((p) => p.validEndTime).filter(Boolean))];
-  const valid = validTimes.length ? new Date(Math.max(...validTimes)) : null;
+  const validMs = validTimes.map((time) => new Date(time).getTime()).filter(Number.isFinite);
+  const valid = validMs.length ? new Date(Math.max(...validMs)) : null;
   const synced = validTimes.length <= 1;
+  const rapidOneHour = current.rapid?.oneHour?.validTime ? new Date(current.rapid.oneHour.validTime) : null;
+  const resolution = latest?.resolutionMeters ? ` at roughly ${(latest.resolutionMeters / 1000).toFixed(1)} km sample resolution` : "";
   els.note.textContent = valid
-    ? `NOAA radar totals ${synced ? "are" : "are not all"} valid through the same hour; latest layer is ${valid.toLocaleString()} at roughly ${(latest.resolutionMeters / 1000).toFixed(1)} km sample resolution.`
+    ? `${rapidOneHour ? `Rapid 1-hour total is valid at ${rapidOneHour.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. ` : ""}NOAA radar totals ${synced ? "are" : "are not all"} valid through the same hour; latest layer is ${valid.toLocaleString()}${resolution}.`
     : "NOAA radar totals are live estimates and may be revised.";
   renderQuality(current);
 }
@@ -64,16 +114,33 @@ function renderQuality(current) {
   els.quality.innerHTML = (current.qualityNotes || [])
     .map((note) => `<p>${escapeHtml(note)}</p>`)
     .join("");
-  els.stations.innerHTML = (current.stationChecks || []).map((station) => {
-    const observed = station.lastHourInches === null || station.lastHourInches === undefined
-      ? "No 1h precip report"
-      : `${inches(station.lastHourInches)} in last hour`;
-    const when = station.timestamp
-      ? new Date(station.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-      : "latest time unavailable";
-    return `<article class="station">
-      <div><strong>${escapeHtml(station.id)} - ${escapeHtml(station.name)}</strong><span>${station.distanceMiles} mi away - ${when}</span></div>
-      <span>${observed}</span>
+}
+
+function renderRateHistory(history) {
+  const samples = history?.samples || [];
+  if (!samples.length) {
+    els.rateHistory.innerHTML = `<p class="emptyForecast">No rain-rate history is available right now.</p>`;
+    if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
+    return;
+  }
+  const values = samples.map((sample) => Number(sample.inchesPerHour) || 0);
+  const max = Math.max(...values, 0.1);
+  const latest = samples.at(-1);
+  els.rateHistory.style.gridTemplateColumns = `repeat(${samples.length}, minmax(62px, 1fr))`;
+  if (els.rateHistoryUpdated) {
+    els.rateHistoryUpdated.textContent = latest?.time
+      ? `Latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "Rapid MRMS";
+  }
+  els.rateHistory.innerHTML = samples.map((sample) => {
+    const value = Number(sample.inchesPerHour) || 0;
+    const height = Math.max(3, (value / max) * 100);
+    const time = sample.time ? new Date(sample.time) : null;
+    const label = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--";
+    return `<article class="rateBar" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
+      <div class="rateBarTrack"><i style="height:${height}%"></i></div>
+      <strong>${fmt.format(value)}</strong>
+      <span>${escapeHtml(label)}</span>
     </article>`;
   }).join("");
 }
@@ -97,6 +164,69 @@ function renderHistory(history) {
   }
   renderBars(history.months);
   renderCalendar(history.days, history.months);
+}
+
+function renderWeather(weather) {
+  if (!weather) return;
+  const current = weather.current || {};
+  els.weatherConditions.textContent = current.conditions || "--";
+  els.weatherStation.textContent = current.station
+    ? `${current.station}${current.observedAt ? ` at ${new Date(current.observedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}`
+    : "NWS observation";
+  els.weatherTemp.textContent = current.temperature === null || current.temperature === undefined ? "--" : `${current.temperature}F`;
+  els.weatherHighLow.textContent = weather.today?.high === null || weather.today?.low === null
+    ? "--"
+    : `${weather.today.high}F / ${weather.today.low}F`;
+  const wind = current.windSpeedMph === null || current.windSpeedMph === undefined
+    ? weather.today?.wind || "--"
+    : `${current.windDirection || ""} ${current.windSpeedMph} mph${current.windGustMph ? ` gust ${current.windGustMph}` : ""}`.trim();
+  els.weatherWind.textContent = wind;
+  els.weatherUpdated.textContent = current.observedAt
+    ? `Observed ${new Date(current.observedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : weather.forecastUpdatedAt
+      ? `Forecast updated ${new Date(weather.forecastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : "NWS weather";
+  els.dailyWeather.innerHTML = (weather.daily || []).map((day) => {
+    const rain = projectedRainLabel(day);
+    return `<article class="weatherDay" data-risk="${forecastRisk(day.precipitationProbability || 0)}">
+      ${day.icon ? `<img src="${escapeHtml(day.icon)}" alt="${escapeHtml(day.summary || "Weather icon")}" loading="lazy">` : ""}
+      <div>
+        <strong>${formatDayName(day.date)}</strong>
+        <span>${escapeHtml(day.summary || "--")}</span>
+      </div>
+      <dl>
+        <div><dt>High</dt><dd>${day.high ?? "--"}F</dd></div>
+        <div><dt>Low</dt><dd>${day.low ?? "--"}F</dd></div>
+        <div><dt>Rain</dt><dd>${day.precipitationProbability ?? 0}%</dd></div>
+        <div><dt>Amount</dt><dd>${rain}</dd></div>
+      </dl>
+    </article>`;
+  }).join("");
+}
+
+function renderRadar(radar) {
+  if (!radar || !radarMap) return;
+  els.radarTime.textContent = radar.updatedAt
+    ? `Radar ${new Date(radar.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+    : "NOAA radar";
+  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(68000);
+  if (radarOverlay) radarOverlay.remove();
+  const radarTime = radar.validTime ? `time=${encodeURIComponent(radar.validTime)}&` : "";
+  radarOverlay = L.imageOverlay(`/api/radar-image?${radarTime}t=${Date.now()}`, bounds, { opacity: 0.72, interactive: false });
+  radarOverlay.addTo(radarMap);
+}
+
+function projectedRainLabel(day) {
+  if (Number(day.precipitationProbability || 0) <= 0) return "None";
+  if (day.projectedRainInches !== null && day.projectedRainInches !== undefined) {
+    return `${fmt.format(day.projectedRainInches)}"`;
+  }
+  return day.rainText ? escapeHtml(day.rainText) : "Amount unavailable";
+}
+
+function formatDayName(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 }
 
 function renderForecast(forecast) {
@@ -226,6 +356,23 @@ function initMap() {
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(map).bindPopup("227 Tournament Circle");
 }
 
+function initRadarMap() {
+  radarMap = L.map("radarMap", {
+    zoomControl: false,
+    dragging: true,
+    scrollWheelZoom: false,
+    doubleClickZoom: false
+  }).setView([HOME.lat, HOME.lon], 9);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 18,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(radarMap);
+
+  const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
+  L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(radarMap).bindPopup("227 Tournament Circle");
+}
+
 function updateMap(period) {
   if (!map) return;
   activePeriod = period;
@@ -244,4 +391,5 @@ document.querySelectorAll(".period").forEach((button) => {
 
 els.refresh.addEventListener("click", () => loadRainfall(true));
 initMap();
+initRadarMap();
 loadRainfall();
