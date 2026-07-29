@@ -284,51 +284,51 @@ function renderTrends(data) {
 
   const cards = [
     {
-      label: "Recent pace",
+      label: "Last 7 days",
       value: inches(last7Total),
-      detail: `${compareTotals(last7Total, previous7Total)} vs prior 7 days`,
+      detail: `Previous 7 days: ${inches(previous7Total)} (${compareTotals(last7Total, previous7Total)})`,
       tone: last7Total >= previous7Total ? "wet" : "dry"
     },
     {
-      label: "Rainy days",
+      label: "How often it rained",
       value: `${rainy30} of 30`,
-      detail: `${rainy90} days with measurable rain in the last 90 days`,
+      detail: `${rainy90} measurable-rain days in the last 90 days`,
       tone: rainy30 >= 10 ? "wet" : "neutral"
     },
     {
-      label: "Bigger events",
+      label: "Soaking rain days",
       value: `${soakingYear}`,
-      detail: `${heavyYear} days reached 1.00"+ in the past year`,
+      detail: `Days at 0.50"+ in the past year; ${heavyYear} reached 1.00"+`,
       tone: heavyYear > 0 ? "storm" : "neutral"
     },
     {
-      label: dryStreak ? "Dry streak" : "Wet streak",
+      label: dryStreak ? "Current dry stretch" : "Current wet stretch",
       value: `${dryStreak || wetStreak} ${pluralize("day", dryStreak || wetStreak)}`,
-      detail: dryStreak ? "Completed days at or below 0.01\"" : "Completed days with measurable rain",
+      detail: dryStreak ? "Completed days with 0.01\" or less" : "Completed days with measurable rain",
       tone: dryStreak >= 5 ? "dry" : wetStreak >= 2 ? "wet" : "neutral"
     },
     {
-      label: "Month context",
+      label: "This month so far",
       value: currentMonth ? inches(currentMonth.inches) : "--",
-      detail: monthRank ? `Ranks #${monthRank.rank} of ${monthRank.total} visible months by rainfall` : "Monthly context unavailable",
+      detail: monthRank ? `#${monthRank.rank} wettest of the ${monthRank.total} months shown` : "Monthly context unavailable",
       tone: monthRank?.rank <= 3 ? "wet" : "neutral"
     },
     {
-      label: "Storm context",
+      label: "Last 24 hours",
       value: current24 === null ? "--" : inches(current24),
-      detail: dailyRank ? `Would rank around #${dailyRank.rank} of ${dailyRank.total} daily totals shown` : "24-hour context unavailable",
+      detail: dailyRank ? `Comparable to the #${dailyRank.rank} daily rainfall total shown` : "24-hour context unavailable",
       tone: current24 >= 1 ? "storm" : current24 > 0.1 ? "wet" : "neutral"
     },
     {
-      label: "Forecast lean",
+      label: "Next 5 days",
       value: forecastStats.rainDays === null ? "--" : `${forecastStats.rainDays} ${pluralize("day", forecastStats.rainDays)}`,
       detail: forecastStats.detail,
       tone: forecastStats.rainDays >= 3 ? "wet" : "neutral"
     },
     {
-      label: "Data blend",
+      label: "Calendar source",
       value: `${mrmsDays}`,
-      detail: "Recent calendar days use MRMS radar totals when available",
+      detail: "Recent days using radar totals instead of archive estimates",
       tone: "neutral"
     }
   ];
@@ -362,8 +362,8 @@ function trailingStreak(days, predicate) {
 
 function compareTotals(current, previous) {
   const delta = Number((current - previous).toFixed(2));
-  if (Math.abs(delta) < 0.01) return "About even";
-  return `${inches(Math.abs(delta))} ${delta > 0 ? "wetter" : "drier"}`;
+  if (Math.abs(delta) < 0.01) return "about the same";
+  return `${delta > 0 ? "up" : "down"} ${inches(Math.abs(delta))}`;
 }
 
 function rankCurrentMonth(months) {
