@@ -295,8 +295,12 @@ function renderCalendar(days, months) {
         const date = dateKey(year, monthNumber, dayNumber);
         const day = dayValues.get(date) || { date, inches: 0 };
         const hasRain = Number(day.inches) > 0;
-        return `<span class="day" data-level="${rainLevel(day.inches)}" title="${formatDateLabel(day.date)}: ${inches(day.inches)}">
+        const isRadar = String(day.source || "").includes("MRMS");
+        const archiveNote = day.archiveInches === undefined ? "" : `; archive value was ${inches(day.archiveInches)}`;
+        const sourceNote = day.source ? ` (${day.source}${archiveNote})` : "";
+        return `<span class="day" data-level="${rainLevel(day.inches)}" data-source="${isRadar ? "radar" : "archive"}" title="${formatDateLabel(day.date)}: ${inches(day.inches)}${sourceNote}">
           <b>${dayNumber}</b>
+          ${isRadar ? `<em>MRMS</em>` : ""}
           <small>${hasRain ? fmt.format(day.inches) : ""}</small>
         </span>`;
       }))

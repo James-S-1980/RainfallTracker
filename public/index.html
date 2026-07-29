@@ -106,11 +106,22 @@
               <button class="period" data-period="24">24h</button>
             </div>
           </div>
-          <div id="map"></div>
-          <div class="legend" aria-label="Rainfall color legend">
-            <span>Light</span>
-            <i></i>
-            <span>Heavy</span>
+          <div class="mapFrame">
+            <div id="map"></div>
+            <div class="mapLegend" aria-label="Rainfall color legend">
+              <div class="legendTitle">
+                <strong>Rainfall key</strong>
+                <span>Inches for selected period</span>
+              </div>
+              <div class="legendScale">
+                <span class="legendItem"><i class="rain0"></i><b>0"</b></span>
+                <span class="legendItem"><i class="rain1"></i><b>0.01-0.10"</b></span>
+                <span class="legendItem"><i class="rain2"></i><b>0.10-0.50"</b></span>
+                <span class="legendItem"><i class="rain3"></i><b>0.50-1.00"</b></span>
+                <span class="legendItem"><i class="rain4"></i><b>1.00-2.00"</b></span>
+                <span class="legendItem"><i class="rain5"></i><b>2.00"+</b></span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -134,7 +145,7 @@
         <div class="panelHead">
           <div>
             <h2>Past-Year Calendar</h2>
-            <p>Completed-day actual rainfall. Today stays blank until final data is available.</p>
+            <p>Completed-day rainfall. Recent days use MRMS radar totals when available; older days use archive data.</p>
           </div>
           <div class="calendarStats">
             <span id="wettestDay">Wettest day: --</span>

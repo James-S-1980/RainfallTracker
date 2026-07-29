@@ -45,6 +45,7 @@ const TWO_MINUTES = 2 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 const RATE_HISTORY_INTERVAL_MINUTES = 20;
+const RECENT_MRMS_DAILY_DAYS = 3;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
 const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
 const HOURLY_FORECAST = `${FORECAST_GRID}/forecast/hourly`;
@@ -223,6 +224,16 @@ function pickRateHistoryFiles(files) {
   return picks;
 }
 
+function pickFileAtOrBefore(files, targetTime, maxLagMinutes = 75) {
+  const targetMs = targetTime.getTime();
+  return files
+    .map((file) => ({ file, time: parseRapidMrmsTime(file) }))
+    .filter((entry) => entry.time)
+    .map((entry) => ({ ...entry, ms: new Date(entry.time).getTime() }))
+    .filter((entry) => entry.ms <= targetMs && targetMs - entry.ms <= maxLagMinutes * 60 * 1000)
+    .sort((a, b) => b.ms - a.ms)[0] || null;
+}
+
 async function mapWithConcurrency(items, limit, mapper) {
   const results = new Array(items.length);
   let next = 0;
@@ -264,6 +275,29 @@ async function getRainRateHistory(force = false) {
   };
   rainRateHistoryCacheAt = Date.now();
   return rainRateHistoryCache;
+}
+
+async function getRecentMrmsDailyOverrides(endDate) {
+  const files = await getRapidMrmsFiles("RadarOnly_QPE_24H");
+  const targetDates = Array.from({ length: RECENT_MRMS_DAILY_DAYS }, (_, index) => addDateDays(endDate, -index));
+  const selected = targetDates
+    .map((date) => ({
+      date,
+      selected: pickFileAtOrBefore(files, localMidnightAfterDateToUtc(date))
+    }))
+    .filter((entry) => entry.selected);
+  const overrides = await mapWithConcurrency(selected, 1, async ({ date, selected: { file } }) => {
+    const sample = await sampleRapidMrmsProduct("RadarOnly_QPE_24H", file);
+    return {
+      date,
+      inches: sample.rawMillimeters === null ? null : Number((sample.rawMillimeters / 25.4).toFixed(3)),
+      rawMillimeters: sample.rawMillimeters,
+      validTime: sample.validTime,
+      file,
+      source: "NOAA MRMS RadarOnly_QPE_24H"
+    };
+  });
+  return overrides.filter((override) => override.inches !== null);
 }
 
 async function getRapidRainfall() {
@@ -323,6 +357,26 @@ function addDateDays(dateKeyValue, days) {
   const [year, month, day] = dateKeyValue.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day + days, 12));
   return date.toISOString().slice(0, 10);
+}
+
+function timeZoneOffsetMinutes(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset"
+  }).formatToParts(date);
+  const offset = parts.find((part) => part.type === "timeZoneName")?.value || "GMT";
+  const match = /^GMT([+-])(\d{1,2})(?::(\d{2}))?$/.exec(offset);
+  if (!match) return 0;
+  const minutes = Number(match[2]) * 60 + Number(match[3] || 0);
+  return match[1] === "-" ? -minutes : minutes;
+}
+
+function localMidnightAfterDateToUtc(dateKeyValue) {
+  const nextDate = addDateDays(dateKeyValue, 1);
+  const [year, month, day] = nextDate.split("-").map(Number);
+  const approximateUtc = new Date(Date.UTC(year, month - 1, day, 5));
+  const offsetMinutes = timeZoneOffsetMinutes(approximateUtc, "America/New_York");
+  return new Date(Date.UTC(year, month - 1, day) - offsetMinutes * 60 * 1000);
 }
 
 function parseDurationHours(duration) {
@@ -587,10 +641,31 @@ async function getHistory(force = false) {
     timezone: "America/New_York"
   })}`;
   const data = await fetchJson(url);
-  const days = (data.daily?.time || []).map((date, index) => ({
+  let days = (data.daily?.time || []).map((date, index) => ({
     date,
-    inches: Number(data.daily.precipitation_sum?.[index] || 0)
+    inches: Number(data.daily.precipitation_sum?.[index] || 0),
+    source: "Open-Meteo Archive"
   }));
+  let recentMrmsOverrides = [];
+  try {
+    recentMrmsOverrides = await getRecentMrmsDailyOverrides(end);
+    const overridesByDate = new Map(recentMrmsOverrides.map((override) => [override.date, override]));
+    days = days.map((day) => {
+      const override = overridesByDate.get(day.date);
+      return override
+        ? {
+          ...day,
+          archiveInches: day.inches,
+          inches: override.inches,
+          source: override.source,
+          mrmsValidTime: override.validTime,
+          mrmsFile: override.file
+        }
+        : day;
+    });
+  } catch (error) {
+    recentMrmsOverrides = [{ error: error.message || "Recent MRMS daily overrides were unavailable" }];
+  }
   const weekTotal = sum(days.slice(-7));
   const monthKey = end.slice(0, 7);
   const monthTotal = sum(days.filter((d) => d.date.startsWith(monthKey)));
@@ -599,13 +674,14 @@ async function getHistory(force = false) {
   const payload = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
-    source: "Open-Meteo Archive API daily precipitation",
+    source: "Open-Meteo Archive API daily precipitation with recent NOAA MRMS daily overrides",
     start,
     end,
     weekTotal,
     monthTotal,
     annualTotal,
     wettestDay: [...days].sort((a, b) => b.inches - a.inches)[0] || null,
+    recentMrmsOverrides,
     months,
     days
   };
