@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
+import { gunzipSync } from "node:zlib";
+import { GribMessageFactory } from "@mattnucc/gribberish";
 
 const PORT = Number(process.env.PORT || 5173);
 const PUBLIC_DIR = join(process.cwd(), "public");
@@ -8,8 +10,17 @@ const ADDRESS = "227 Tournament Circle, North East, MD 21901";
 const LAT = 39.575348823737;
 const LON = -75.933586373761;
 const MRMS = "https://mapservices.weather.noaa.gov/raster/rest/services/obs/mrms_qpe/ImageServer";
+const RAPID_MRMS = "https://mrms.ncep.noaa.gov/data/2D";
 const RADAR = "https://mapservices.weather.noaa.gov/eventdriven/rest/services/radar/radar_base_reflectivity_time/ImageServer";
 const NWS_HEADERS = { "user-agent": "rainfall-monitor/1.0 contact: local-user" };
+const MRMS_GRID = {
+  rows: 3500,
+  cols: 7000,
+  firstLatitude: 54.995,
+  firstLongitude: 230.005,
+  longitudeStep: 0.01,
+  latitudeStep: 0.01
+};
 const PERIODS = {
   "1": "conus_QPE_01H",
   "6": "conus_QPE_06H",
@@ -27,8 +38,13 @@ let weatherCache = null;
 let weatherCacheAt = 0;
 let radarCache = null;
 let radarCacheAt = 0;
+let rainRateHistoryCache = null;
+let rainRateHistoryCacheAt = 0;
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
+const TWO_MINUTES = 2 * 60 * 1000;
+const TEN_MINUTES = 10 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+const RATE_HISTORY_INTERVAL_MINUTES = 20;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
 const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
 const HOURLY_FORECAST = `${FORECAST_GRID}/forecast/hourly`;
@@ -134,34 +150,137 @@ async function sampleMrmsPeriod(hours, catalog) {
   };
 }
 
-async function getStationChecks() {
-  const stationsUrl = "https://api.weather.gov/gridpoints/LWX/131,107/stations";
-  const stations = await fetchJson(stationsUrl);
-  const nearest = (stations.features || []).slice(0, 4);
-  const checks = await Promise.all(nearest.map(async (station) => {
-    const id = station.properties.stationIdentifier;
-    try {
-      const latest = await fetchJson(`https://api.weather.gov/stations/${id}/observations/latest`);
-      const p = latest.properties || {};
-      return {
-        id,
-        name: station.properties.name,
-        distanceMiles: Number(((station.properties.distance?.value || 0) / 1609.344).toFixed(1)),
-        timestamp: p.timestamp || null,
-        lastHourInches: mmToInches(p.precipitationLastHour?.value),
-        last3HoursInches: mmToInches(p.precipitationLast3Hours?.value),
-        last6HoursInches: mmToInches(p.precipitationLast6Hours?.value)
-      };
-    } catch (error) {
-      return {
-        id,
-        name: station.properties.name,
-        distanceMiles: Number(((station.properties.distance?.value || 0) / 1609.344).toFixed(1)),
-        error: error.message
-      };
+function parseRapidMrmsTime(fileName) {
+  const match = /_(\d{8})-(\d{6})\.grib2\.gz$/.exec(fileName);
+  if (!match) return null;
+  const [, day, time] = match;
+  return new Date(`${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}Z`).toISOString();
+}
+
+async function getRapidMrmsFiles(product) {
+  const html = await (await fetch(`${RAPID_MRMS}/${product}/`, { headers: NWS_HEADERS })).text();
+  const pattern = new RegExp(`MRMS_${product}[^"<> ]+\\.grib2\\.gz`, "g");
+  return [...new Set([...html.matchAll(pattern)].map((match) => match[0]))].sort();
+}
+
+async function getLatestRapidMrmsFile(product) {
+  const files = await getRapidMrmsFiles(product);
+  const file = files.at(-1);
+  if (!file) throw new Error(`No rapid MRMS ${product} file is currently listed`);
+  return file;
+}
+
+function sampleMrmsGrid(data) {
+  const longitude = LON < 0 ? LON + 360 : LON;
+  const row = Math.round((MRMS_GRID.firstLatitude - LAT) / MRMS_GRID.latitudeStep);
+  const col = Math.round((longitude - MRMS_GRID.firstLongitude) / MRMS_GRID.longitudeStep);
+  if (row < 0 || row >= MRMS_GRID.rows || col < 0 || col >= MRMS_GRID.cols) {
+    throw new Error("The address is outside the rapid MRMS grid");
+  }
+  const value = Number(data[row * MRMS_GRID.cols + col]);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+async function sampleRapidMrmsProduct(product, selectedFile = null) {
+  const file = selectedFile || await getLatestRapidMrmsFile(product);
+  const response = await fetch(`${RAPID_MRMS}/${product}/${file}`, { headers: NWS_HEADERS });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText} from rapid MRMS ${product}`);
+  const zipped = Buffer.from(await response.arrayBuffer());
+  const grib = gunzipSync(zipped);
+  const factory = GribMessageFactory.fromBuffer(new Uint8Array(grib));
+  const messageKey = factory.availableMessages[0];
+  if (!messageKey) throw new Error(`Rapid MRMS ${product} file did not contain a readable message`);
+  const message = factory.getMessage(messageKey);
+  const rawMillimeters = sampleMrmsGrid(message.data);
+  return {
+    product,
+    file,
+    validTime: parseRapidMrmsTime(file),
+    rawMillimeters,
+    units: message.units || "mm",
+    sourceLayer: message.varAbbrev || product
+  };
+}
+
+function pickRateHistoryFiles(files) {
+  const dated = files
+    .map((file) => ({ file, time: parseRapidMrmsTime(file) }))
+    .filter((entry) => entry.time)
+    .map((entry) => ({ ...entry, ms: new Date(entry.time).getTime() }))
+    .sort((a, b) => a.ms - b.ms);
+  const latest = dated.at(-1);
+  if (!latest) return [];
+  const picks = [];
+  for (let offset = 120; offset >= 0; offset -= RATE_HISTORY_INTERVAL_MINUTES) {
+    const target = latest.ms - offset * 60 * 1000;
+    const candidate = dated
+      .filter((entry) => entry.ms <= target)
+      .sort((a, b) => b.ms - a.ms)[0];
+    if (candidate && !picks.some((pick) => pick.file === candidate.file)) {
+      picks.push(candidate);
     }
-  }));
-  return checks;
+  }
+  return picks;
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function getRainRateHistory(force = false) {
+  if (!force && rainRateHistoryCache && Date.now() - rainRateHistoryCacheAt < TEN_MINUTES) {
+    return rainRateHistoryCache;
+  }
+  const files = await getRapidMrmsFiles("PrecipRate");
+  const selected = pickRateHistoryFiles(files);
+  const samples = await mapWithConcurrency(selected, 2, async ({ file }) => {
+    const sample = await sampleRapidMrmsProduct("PrecipRate", file);
+    return {
+      time: sample.validTime,
+      file,
+      inchesPerHour: sample.rawMillimeters === null ? null : Number((sample.rawMillimeters / 25.4).toFixed(3)),
+      rawMillimetersPerHour: sample.rawMillimeters
+    };
+  });
+  rainRateHistoryCache = {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    source: "NOAA MRMS direct 2-minute PrecipRate",
+    units: "inches per hour",
+    updatedAt: samples.at(-1)?.time || new Date().toISOString(),
+    intervalMinutes: RATE_HISTORY_INTERVAL_MINUTES,
+    hours: 2,
+    samples
+  };
+  rainRateHistoryCacheAt = Date.now();
+  return rainRateHistoryCache;
+}
+
+async function getRapidRainfall() {
+  const [oneHour, rainRate] = await Promise.all([
+    sampleRapidMrmsProduct("RadarOnly_QPE_01H"),
+    sampleRapidMrmsProduct("PrecipRate")
+  ]);
+  return {
+    oneHour: {
+      ...oneHour,
+      inches: oneHour.rawMillimeters === null ? null : Number((oneHour.rawMillimeters / 25.4).toFixed(3))
+    },
+    rainRate: {
+      ...rainRate,
+      inchesPerHour: rainRate.rawMillimeters === null ? null : Number((rainRate.rawMillimeters / 25.4).toFixed(3))
+    }
+  };
 }
 
 function mmToInches(value) {
@@ -299,9 +418,11 @@ function buildDailyWeather(periods, grid) {
   }));
 }
 
-function buildQualityNotes(periods, stationChecks) {
+function buildQualityNotes(periods) {
   const notes = [
-    "MRMS point samples are converted from raw millimeters to inches.",
+    "Rapid 1-hour rainfall and live rain rate come from NOAA's direct 2-minute MRMS GRIB2 feed.",
+    "Longer MRMS point samples are converted from raw millimeters to inches.",
+    "MRMS is a radar-estimated neighborhood value, not a physical rain gauge at the house.",
     "Short-window radar totals may update before longer windows, so windows can briefly look non-monotonic."
   ];
   const validEnds = new Set(periods.map((p) => p.validEndTime).filter(Boolean));
@@ -317,34 +438,38 @@ function buildQualityNotes(periods, stationChecks) {
       break;
     }
   }
-  const oneHour = periods.find((p) => p.hours === 1);
-  const nearby = stationChecks.find((s) => s.lastHourInches !== null && s.lastHourInches !== undefined);
-  if (oneHour?.inches !== null && nearby) {
-    const gap = Math.abs(oneHour.inches - nearby.lastHourInches);
-    notes.push(`Nearest reporting station ${nearby.id} is ${nearby.distanceMiles} mi away and last reported ${nearby.lastHourInches}" in 1 hour.`);
-    if (gap > 0.5) {
-      notes.push("Radar and station readings differ materially; trust this as a neighborhood estimate, not a rain-gauge measurement.");
-    }
-  }
   return notes;
 }
 
 async function getCurrentTotals(force = false) {
-  if (!force && currentCache && Date.now() - currentCacheAt < FIFTEEN_MINUTES) return currentCache;
+  if (!force && currentCache && Date.now() - currentCacheAt < TWO_MINUTES) return currentCache;
   const catalog = await getRasterCatalog();
-  const [periods, stationChecks] = await Promise.all([
-    Promise.all([1, 6, 12, 24].map((h) => sampleMrmsPeriod(h, catalog))),
-    getStationChecks()
-  ]);
+  const periods = await Promise.all([1, 6, 12, 24].map((h) => sampleMrmsPeriod(h, catalog)));
+  let rapid = null;
+  try {
+    rapid = await getRapidRainfall();
+    const oneHour = periods.find((period) => period.hours === 1);
+    if (oneHour && rapid.oneHour.inches !== null) {
+      oneHour.imageServerInches = oneHour.inches;
+      oneHour.inches = rapid.oneHour.inches;
+      oneHour.rawMillimeters = rapid.oneHour.rawMillimeters;
+      oneHour.validEndTime = rapid.oneHour.validTime || oneHour.validEndTime;
+      oneHour.sourceLayer = rapid.oneHour.sourceLayer;
+      oneHour.source = "NOAA MRMS direct 2-minute RadarOnly_QPE_01H";
+      oneHour.rapid = true;
+    }
+  } catch (error) {
+    rapid = { error: error.message || "Rapid MRMS feed was unavailable" };
+  }
   currentCache = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
     updatedAt: new Date().toISOString(),
-    source: "NOAA MRMS radar-only QPE ImageServer",
+    source: "NOAA MRMS radar-only QPE",
     units: "inches",
     periods,
-    stationChecks,
-    qualityNotes: buildQualityNotes(periods, stationChecks)
+    rapid,
+    qualityNotes: buildQualityNotes(periods)
   };
   currentCacheAt = Date.now();
   return currentCache;
@@ -590,6 +715,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
+    if (url.pathname === "/api/rain-rate-history") return json(res, 200, await getRainRateHistory(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/weather") return json(res, 200, await getWeatherReport(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/radar") return json(res, 200, await getRadarSnapshot(url.searchParams.get("refresh") === "1"));

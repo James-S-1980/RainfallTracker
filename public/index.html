@@ -23,13 +23,25 @@
       </section>
 
       <section class="metrics" aria-label="Rainfall totals">
-        <article class="metric live"><span>1 hour</span><strong id="total1">--</strong><small>NOAA MRMS</small></article>
+        <article class="metric live"><span>1 hour</span><strong id="total1">--</strong><small id="total1Source">NOAA MRMS</small></article>
+        <article class="metric live"><span>Live rate</span><strong id="rainRate">--</strong><small id="rainRateSource">NOAA MRMS</small></article>
         <article class="metric live"><span>6 hours</span><strong id="total6">--</strong><small>NOAA MRMS</small></article>
         <article class="metric live"><span>12 hours</span><strong id="total12">--</strong><small>NOAA MRMS</small></article>
         <article class="metric live"><span>24 hours</span><strong id="total24">--</strong><small>NOAA MRMS</small></article>
         <article class="metric"><span>7 days</span><strong id="weekTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>This month</span><strong id="monthTotal">--</strong><small>Open-Meteo</small></article>
         <article class="metric"><span>Past year</span><strong id="yearTotal">--</strong><small>Open-Meteo</small></article>
+      </section>
+
+      <section class="panel rateHistoryPanel" aria-label="Last two hours rain rate history">
+        <div class="panelHead">
+          <div>
+            <h2>Rain Rate History</h2>
+            <p>Rapid MRMS rain-rate snapshots over the last 2 hours.</p>
+          </div>
+          <div class="rateHistoryUpdated" id="rateHistoryUpdated">Rate history loading</div>
+        </div>
+        <div id="rateHistoryChart" class="rateHistoryChart"></div>
       </section>
 
       <section class="panel weatherPanel" aria-label="North East Maryland weather report">
@@ -112,9 +124,8 @@
         <div id="monthlyBars" class="bars"></div>
         <div class="note" id="sourceNote">Waiting for source timestamps.</div>
         <div class="checkPanel">
-          <h3>Accuracy Check</h3>
+          <h3>Radar Notes</h3>
           <div id="qualityNotes" class="qualityNotes"></div>
-          <div id="stationChecks" class="stationChecks"></div>
         </div>
       </div>
       </section>

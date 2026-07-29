@@ -13,7 +13,11 @@ const els = {
   refresh: document.querySelector("#refreshButton"),
   note: document.querySelector("#sourceNote"),
   quality: document.querySelector("#qualityNotes"),
-  stations: document.querySelector("#stationChecks"),
+  total1Source: document.querySelector("#total1Source"),
+  rainRate: document.querySelector("#rainRate"),
+  rainRateSource: document.querySelector("#rainRateSource"),
+  rateHistory: document.querySelector("#rateHistoryChart"),
+  rateHistoryUpdated: document.querySelector("#rateHistoryUpdated"),
   weatherUpdated: document.querySelector("#weatherUpdated"),
   weatherConditions: document.querySelector("#weatherConditions"),
   weatherTemp: document.querySelector("#weatherTemp"),
@@ -34,6 +38,11 @@ function inches(value) {
   return `${fmt.format(Number(value))}"`;
 }
 
+function inchesPerHour(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  return `${fmt.format(Number(value))}"/hr`;
+}
+
 function setStatus(text, state = "loading") {
   els.status.textContent = text;
   els.dot.className = `dot ${state === "ready" ? "ready" : state === "error" ? "error" : ""}`;
@@ -52,8 +61,22 @@ async function loadRainfall(refresh = false) {
     renderHistory(data.history);
     setStatus(`Updated ${new Date(data.current.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, "ready");
     updateMap(activePeriod);
+    loadRateHistory(refresh);
   } catch (error) {
     setStatus(error.message || "Unable to load data", "error");
+  }
+}
+
+async function loadRateHistory(refresh = false) {
+  if (!els.rateHistory) return;
+  els.rateHistory.innerHTML = `<p class="emptyForecast">Loading rain-rate history.</p>`;
+  try {
+    const response = await fetch(`/api/rain-rate-history${refresh ? "?refresh=1" : ""}`);
+    if (!response.ok) throw new Error("Rain-rate history is unavailable");
+    renderRateHistory(await response.json());
+  } catch (error) {
+    els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
+    if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
   }
 }
 
@@ -62,12 +85,27 @@ function renderCurrent(current) {
     const target = document.querySelector(`#total${period.hours}`);
     if (target) target.textContent = inches(period.inches);
   }
+  const oneHour = current.periods.find((p) => p.hours === 1);
+  if (els.total1Source) {
+    els.total1Source.textContent = oneHour?.rapid ? "Rapid MRMS" : "NOAA MRMS";
+  }
+  if (els.rainRate) {
+    els.rainRate.textContent = inchesPerHour(current.rapid?.rainRate?.inchesPerHour);
+  }
+  if (els.rainRateSource) {
+    els.rainRateSource.textContent = current.rapid?.rainRate?.validTime
+      ? `Rapid MRMS ${new Date(current.rapid.rainRate.validTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "Rapid MRMS";
+  }
   const latest = current.periods.find((p) => p.hours === 24) || current.periods[0];
   const validTimes = [...new Set(current.periods.map((p) => p.validEndTime).filter(Boolean))];
-  const valid = validTimes.length ? new Date(Math.max(...validTimes)) : null;
+  const validMs = validTimes.map((time) => new Date(time).getTime()).filter(Number.isFinite);
+  const valid = validMs.length ? new Date(Math.max(...validMs)) : null;
   const synced = validTimes.length <= 1;
+  const rapidOneHour = current.rapid?.oneHour?.validTime ? new Date(current.rapid.oneHour.validTime) : null;
+  const resolution = latest?.resolutionMeters ? ` at roughly ${(latest.resolutionMeters / 1000).toFixed(1)} km sample resolution` : "";
   els.note.textContent = valid
-    ? `NOAA radar totals ${synced ? "are" : "are not all"} valid through the same hour; latest layer is ${valid.toLocaleString()} at roughly ${(latest.resolutionMeters / 1000).toFixed(1)} km sample resolution.`
+    ? `${rapidOneHour ? `Rapid 1-hour total is valid at ${rapidOneHour.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. ` : ""}NOAA radar totals ${synced ? "are" : "are not all"} valid through the same hour; latest layer is ${valid.toLocaleString()}${resolution}.`
     : "NOAA radar totals are live estimates and may be revised.";
   renderQuality(current);
 }
@@ -76,16 +114,33 @@ function renderQuality(current) {
   els.quality.innerHTML = (current.qualityNotes || [])
     .map((note) => `<p>${escapeHtml(note)}</p>`)
     .join("");
-  els.stations.innerHTML = (current.stationChecks || []).map((station) => {
-    const observed = station.lastHourInches === null || station.lastHourInches === undefined
-      ? "No 1h precip report"
-      : `${inches(station.lastHourInches)} in last hour`;
-    const when = station.timestamp
-      ? new Date(station.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-      : "latest time unavailable";
-    return `<article class="station">
-      <div><strong>${escapeHtml(station.id)} - ${escapeHtml(station.name)}</strong><span>${station.distanceMiles} mi away - ${when}</span></div>
-      <span>${observed}</span>
+}
+
+function renderRateHistory(history) {
+  const samples = history?.samples || [];
+  if (!samples.length) {
+    els.rateHistory.innerHTML = `<p class="emptyForecast">No rain-rate history is available right now.</p>`;
+    if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
+    return;
+  }
+  const values = samples.map((sample) => Number(sample.inchesPerHour) || 0);
+  const max = Math.max(...values, 0.1);
+  const latest = samples.at(-1);
+  els.rateHistory.style.gridTemplateColumns = `repeat(${samples.length}, minmax(62px, 1fr))`;
+  if (els.rateHistoryUpdated) {
+    els.rateHistoryUpdated.textContent = latest?.time
+      ? `Latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "Rapid MRMS";
+  }
+  els.rateHistory.innerHTML = samples.map((sample) => {
+    const value = Number(sample.inchesPerHour) || 0;
+    const height = Math.max(3, (value / max) * 100);
+    const time = sample.time ? new Date(sample.time) : null;
+    const label = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--";
+    return `<article class="rateBar" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
+      <div class="rateBarTrack"><i style="height:${height}%"></i></div>
+      <strong>${fmt.format(value)}</strong>
+      <span>${escapeHtml(label)}</span>
     </article>`;
   }).join("");
 }
