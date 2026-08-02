@@ -192,12 +192,42 @@ function renderRateHistory(history) {
     const height = Math.max(3, (value / max) * 100);
     const time = sample.time ? new Date(sample.time) : null;
     const label = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--";
-    return `<article class="rateBar" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
-      <div class="rateBarTrack"><i style="height:${height}%"></i></div>
+    return `<article class="rateBar" data-rate-level="${rateLevel(value)}" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
+      <div class="rateBarTrack"><i style="height:${height}%; background:${rateColor(value)}"></i></div>
       <strong>${fmt.format(value)}</strong>
       <span>${escapeHtml(label)}</span>
     </article>`;
   }).join("");
+}
+
+function rateLevel(value) {
+  if (value >= 0.75) return "heavy";
+  if (value >= 0.25) return "moderate";
+  if (value > 0) return "light";
+  return "none";
+}
+
+function rateColor(value) {
+  const stops = [
+    { value: 0, color: [207, 216, 208] },
+    { value: 0.05, color: [175, 221, 162] },
+    { value: 0.25, color: [225, 199, 72] },
+    { value: 0.5, color: [218, 126, 55] },
+    { value: 1, color: [178, 58, 72] },
+    { value: 2, color: [126, 32, 52] }
+  ];
+  const rate = Math.max(0, Number(value) || 0);
+  const upperIndex = stops.findIndex((stop) => rate <= stop.value);
+  if (upperIndex <= 0) return rgb(stops[0].color);
+  if (upperIndex === -1) return rgb(stops.at(-1).color);
+  const lower = stops[upperIndex - 1];
+  const upper = stops[upperIndex];
+  const ratio = (rate - lower.value) / (upper.value - lower.value);
+  return rgb(lower.color.map((component, index) => Math.round(component + (upper.color[index] - component) * ratio)));
+}
+
+function rgb(parts) {
+  return `rgb(${parts.join(", ")})`;
 }
 
 function escapeHtml(value) {

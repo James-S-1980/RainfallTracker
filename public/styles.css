@@ -275,7 +275,7 @@ h3 {
   display: block;
   width: 100%;
   border-radius: 5px 5px 3px 3px;
-  background: linear-gradient(180deg, #2364aa, #2f7d54);
+  background: #cfd8d0;
 }
 
 .rateBar strong {
@@ -291,6 +291,33 @@ h3 {
   line-height: 1;
   white-space: nowrap;
 }
+
+.rateLegend {
+  padding: 0 18px 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.rateLegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rateLegend i {
+  width: 16px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(21, 35, 31, 0.12);
+}
+
+.rateLight { background: #afdda2; }
+.rateModerate { background: linear-gradient(90deg, #e1c748, #da7e37); }
+.rateHeavy { background: linear-gradient(90deg, #b23a48, #7e2034); }
 
 .content {
   display: grid;
