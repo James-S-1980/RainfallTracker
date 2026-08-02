@@ -821,7 +821,7 @@ async function redirectRadarImage(req, res, url) {
     : null;
   const radarTime = selectedFrame?.time || (Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime);
   const center = webMercator(LON, LAT);
-  const radius = Number(url.searchParams.get("radius") || 55000);
+  const radius = Number(url.searchParams.get("radius") || 80000);
   const bbox = [
     center.x - radius,
     center.y - radius,

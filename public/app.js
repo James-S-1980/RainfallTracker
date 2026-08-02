@@ -1,4 +1,5 @@
 const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
+const RADAR_VIEW_METERS = 160000;
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let map;
@@ -323,9 +324,12 @@ function renderRadar(radar) {
 }
 
 function showRadarFrame(frame) {
-  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(68000);
+  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(RADAR_VIEW_METERS);
   if (radarOverlay) radarOverlay.remove();
-  const params = new URLSearchParams({ t: String(Date.now()) });
+  const params = new URLSearchParams({
+    radius: String(Math.round(RADAR_VIEW_METERS / 2)),
+    t: String(Date.now())
+  });
   if (frame?.rasterId) params.set("rasterId", String(frame.rasterId));
   else if (frame?.time) params.set("time", String(frame.time));
   radarOverlay = L.imageOverlay(`/api/radar-image?${params}`, bounds, { opacity: 0.72, interactive: false });
@@ -629,7 +633,7 @@ function initRadarMap() {
     dragging: true,
     scrollWheelZoom: false,
     doubleClickZoom: false
-  }).setView([HOME.lat, HOME.lon], 9);
+  }).setView([HOME.lat, HOME.lon], 8);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 18,
