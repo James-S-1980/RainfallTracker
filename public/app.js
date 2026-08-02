@@ -6,6 +6,8 @@ let radarMap;
 let overlay;
 let radarOverlay;
 let activePeriod = "24";
+let activeRateInterval = 20;
+let rateHistoryRequestId = 0;
 
 const els = {
   dot: document.querySelector("#statusDot"),
@@ -18,6 +20,7 @@ const els = {
   rainRateSource: document.querySelector("#rainRateSource"),
   rateHistory: document.querySelector("#rateHistoryChart"),
   rateHistoryUpdated: document.querySelector("#rateHistoryUpdated"),
+  rateIntervalButtons: document.querySelectorAll(".rateIntervalButton"),
   weatherUpdated: document.querySelector("#weatherUpdated"),
   weatherConditions: document.querySelector("#weatherConditions"),
   weatherTemp: document.querySelector("#weatherTemp"),
@@ -72,12 +75,19 @@ async function loadRainfall(refresh = false) {
 
 async function loadRateHistory(refresh = false) {
   if (!els.rateHistory) return;
-  els.rateHistory.innerHTML = `<p class="emptyForecast">Loading rain-rate history.</p>`;
+  const requestId = rateHistoryRequestId + 1;
+  rateHistoryRequestId = requestId;
+  const slowNote = activeRateInterval <= 5 ? " This can take a few minutes the first time." : "";
+  els.rateHistory.innerHTML = `<p class="emptyForecast">Loading ${activeRateInterval}-minute rain-rate history.${slowNote}</p>`;
   try {
-    const response = await fetch(`/api/rain-rate-history${refresh ? "?refresh=1" : ""}`);
+    const params = new URLSearchParams({ interval: String(activeRateInterval) });
+    if (refresh) params.set("refresh", "1");
+    const response = await fetch(`/api/rain-rate-history?${params}`);
     if (!response.ok) throw new Error("Rain-rate history is unavailable");
+    if (requestId !== rateHistoryRequestId) return;
     renderRateHistory(await response.json());
   } catch (error) {
+    if (requestId !== rateHistoryRequestId) return;
     els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
     if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
   }
@@ -132,7 +142,7 @@ function renderRateHistory(history) {
   els.rateHistory.style.gridTemplateColumns = `repeat(${samples.length}, minmax(62px, 1fr))`;
   if (els.rateHistoryUpdated) {
     els.rateHistoryUpdated.textContent = latest?.time
-      ? `Latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      ? `${history.intervalMinutes || activeRateInterval}m samples; latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       : "Rapid MRMS";
   }
   els.rateHistory.innerHTML = samples.map((sample) => {
@@ -535,6 +545,16 @@ function updateMap(period) {
 
 document.querySelectorAll(".period").forEach((button) => {
   button.addEventListener("click", () => updateMap(button.dataset.period));
+});
+
+els.rateIntervalButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    activeRateInterval = Number(button.dataset.interval || 20);
+    els.rateIntervalButtons.forEach((item) => {
+      item.classList.toggle("active", item === button);
+    });
+    loadRateHistory(false);
+  });
 });
 
 els.refresh.addEventListener("click", () => loadRainfall(true));

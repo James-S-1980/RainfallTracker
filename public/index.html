@@ -39,7 +39,16 @@
             <h2>Rain Rate History</h2>
             <p>Rapid MRMS rain-rate snapshots over the last 2 hours.</p>
           </div>
-          <div class="rateHistoryUpdated" id="rateHistoryUpdated">Rate history loading</div>
+          <div class="rateHistoryControls">
+            <div class="rateInterval" role="group" aria-label="Rain rate sample interval">
+              <button class="rateIntervalButton" type="button" data-interval="30">30m</button>
+              <button class="rateIntervalButton active" type="button" data-interval="20">20m</button>
+              <button class="rateIntervalButton" type="button" data-interval="10">10m</button>
+              <button class="rateIntervalButton" type="button" data-interval="5">5m</button>
+              <button class="rateIntervalButton" type="button" data-interval="2">2m</button>
+            </div>
+            <div class="rateHistoryUpdated" id="rateHistoryUpdated">Rate history loading</div>
+          </div>
         </div>
         <div id="rateHistoryChart" class="rateHistoryChart"></div>
       </section>

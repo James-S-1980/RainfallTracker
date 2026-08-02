@@ -38,13 +38,13 @@ let weatherCache = null;
 let weatherCacheAt = 0;
 let radarCache = null;
 let radarCacheAt = 0;
-let rainRateHistoryCache = null;
-let rainRateHistoryCacheAt = 0;
+const rainRateHistoryCaches = new Map();
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const TWO_MINUTES = 2 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
-const RATE_HISTORY_INTERVAL_MINUTES = 20;
+const DEFAULT_RATE_HISTORY_INTERVAL_MINUTES = 20;
+const RATE_HISTORY_INTERVALS = new Set([2, 5, 10, 20, 30]);
 const RECENT_MRMS_DAILY_DAYS = 3;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
 const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
@@ -203,7 +203,12 @@ async function sampleRapidMrmsProduct(product, selectedFile = null) {
   };
 }
 
-function pickRateHistoryFiles(files) {
+function parseRateHistoryInterval(value) {
+  const interval = Number(value || DEFAULT_RATE_HISTORY_INTERVAL_MINUTES);
+  return RATE_HISTORY_INTERVALS.has(interval) ? interval : DEFAULT_RATE_HISTORY_INTERVAL_MINUTES;
+}
+
+function pickRateHistoryFiles(files, intervalMinutes) {
   const dated = files
     .map((file) => ({ file, time: parseRapidMrmsTime(file) }))
     .filter((entry) => entry.time)
@@ -212,7 +217,7 @@ function pickRateHistoryFiles(files) {
   const latest = dated.at(-1);
   if (!latest) return [];
   const picks = [];
-  for (let offset = 120; offset >= 0; offset -= RATE_HISTORY_INTERVAL_MINUTES) {
+  for (let offset = 120; offset >= 0; offset -= intervalMinutes) {
     const target = latest.ms - offset * 60 * 1000;
     const candidate = dated
       .filter((entry) => entry.ms <= target)
@@ -248,13 +253,14 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results;
 }
 
-async function getRainRateHistory(force = false) {
-  if (!force && rainRateHistoryCache && Date.now() - rainRateHistoryCacheAt < TEN_MINUTES) {
-    return rainRateHistoryCache;
+async function getRainRateHistory(force = false, intervalMinutes = DEFAULT_RATE_HISTORY_INTERVAL_MINUTES) {
+  const cache = rainRateHistoryCaches.get(intervalMinutes);
+  if (!force && cache && Date.now() - cache.fetchedAtMs < TEN_MINUTES) {
+    return cache.payload;
   }
   const files = await getRapidMrmsFiles("PrecipRate");
-  const selected = pickRateHistoryFiles(files);
-  const samples = await mapWithConcurrency(selected, 2, async ({ file }) => {
+  const selected = pickRateHistoryFiles(files, intervalMinutes);
+  const samples = await mapWithConcurrency(selected, intervalMinutes <= 5 ? 2 : 3, async ({ file }) => {
     const sample = await sampleRapidMrmsProduct("PrecipRate", file);
     return {
       time: sample.validTime,
@@ -263,18 +269,19 @@ async function getRainRateHistory(force = false) {
       rawMillimetersPerHour: sample.rawMillimeters
     };
   });
-  rainRateHistoryCache = {
+  const payload = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
     source: "NOAA MRMS direct 2-minute PrecipRate",
     units: "inches per hour",
     updatedAt: samples.at(-1)?.time || new Date().toISOString(),
-    intervalMinutes: RATE_HISTORY_INTERVAL_MINUTES,
+    intervalMinutes,
+    supportedIntervals: [...RATE_HISTORY_INTERVALS],
     hours: 2,
     samples
   };
-  rainRateHistoryCacheAt = Date.now();
-  return rainRateHistoryCache;
+  rainRateHistoryCaches.set(intervalMinutes, { payload, fetchedAtMs: Date.now() });
+  return payload;
 }
 
 async function getRecentMrmsDailyOverrides(endDate) {
@@ -791,7 +798,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
-    if (url.pathname === "/api/rain-rate-history") return json(res, 200, await getRainRateHistory(url.searchParams.get("refresh") === "1"));
+    if (url.pathname === "/api/rain-rate-history") {
+      const interval = parseRateHistoryInterval(url.searchParams.get("interval"));
+      return json(res, 200, await getRainRateHistory(url.searchParams.get("refresh") === "1", interval));
+    }
     if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/weather") return json(res, 200, await getWeatherReport(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/radar") return json(res, 200, await getRadarSnapshot(url.searchParams.get("refresh") === "1"));
