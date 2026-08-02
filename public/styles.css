@@ -365,6 +365,24 @@ h3 {
   pointer-events: none;
 }
 
+.radarFrameTime {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  z-index: 500;
+  min-width: 92px;
+  padding: 8px 10px;
+  border: 1px solid rgba(21, 35, 31, 0.16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(21, 35, 31, 0.14);
+  pointer-events: none;
+}
+
 .weatherSource {
   color: var(--muted);
   font-size: 0.84rem;

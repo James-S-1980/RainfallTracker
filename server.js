@@ -648,18 +648,45 @@ async function getWeatherReport(force = false) {
 
 async function getRadarSnapshot(force = false) {
   if (!force && radarCache && Date.now() - radarCacheAt < FIFTEEN_MINUTES) return radarCache;
-  const data = await fetchJson(`${RADAR}?f=pjson`);
-  const validTime = data.timeInfo?.timeExtent?.[1] || null;
+  const [data, frames] = await Promise.all([
+    fetchJson(`${RADAR}?f=pjson`),
+    getRadarFrames()
+  ]);
+  const latestFrame = frames.at(-1);
+  const validTime = latestFrame?.time || data.timeInfo?.timeExtent?.[1] || null;
   radarCache = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
     source: "NOAA radar base reflectivity",
     updatedAt: validTime ? new Date(validTime).toISOString() : new Date().toISOString(),
     validTime,
-    updateFrequency: "About every 5 minutes"
+    updateFrequency: "About every 5-8 minutes",
+    frames
   };
   radarCacheAt = Date.now();
   return radarCache;
+}
+
+async function getRadarFrames() {
+  const fields = "objectid,name,idp_subset,idp_validtime,idp_validendtime,idp_ingestdate";
+  const data = await fetchJson(`${RADAR}/query?${toQuery({
+    f: "json",
+    where: "idp_subset = 'CONUS'",
+    outFields: fields,
+    returnGeometry: "false",
+    orderByFields: "idp_validtime DESC",
+    resultRecordCount: "8"
+  })}`);
+  return (data.features || [])
+    .map((feature) => ({
+      rasterId: feature.attributes.objectid,
+      name: feature.attributes.name,
+      time: feature.attributes.idp_validtime,
+      validTime: feature.attributes.idp_validtime ? new Date(feature.attributes.idp_validtime).toISOString() : null,
+      ingestTime: feature.attributes.idp_ingestdate || null
+    }))
+    .filter((frame) => frame.rasterId && frame.time)
+    .sort((a, b) => a.time - b.time);
 }
 
 async function getHistory(force = false) {
@@ -787,8 +814,12 @@ async function redirectMapImage(req, res, url) {
 
 async function redirectRadarImage(req, res, url) {
   const radar = await getRadarSnapshot();
+  const requestedRasterId = Number(url.searchParams.get("rasterId"));
   const requestedTime = Number(url.searchParams.get("time"));
-  const radarTime = Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime;
+  const selectedFrame = Number.isFinite(requestedRasterId)
+    ? radar.frames?.find((frame) => frame.rasterId === requestedRasterId)
+    : null;
+  const radarTime = selectedFrame?.time || (Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime);
   const center = webMercator(LON, LAT);
   const radius = Number(url.searchParams.get("radius") || 55000);
   const bbox = [
@@ -805,7 +836,13 @@ async function redirectRadarImage(req, res, url) {
     size: "1000,1000",
     format: "png32",
     transparent: "true",
-    ...(radarTime ? { time: String(radarTime) } : {})
+    ...(radarTime ? { time: String(radarTime) } : {}),
+    ...(selectedFrame ? {
+      mosaicRule: JSON.stringify({
+        mosaicMethod: "esriMosaicLockRaster",
+        lockRasterIds: [selectedFrame.rasterId]
+      })
+    } : {})
   })}`;
   res.writeHead(302, { location: exportUrl, "cache-control": "no-store" });
   res.end();

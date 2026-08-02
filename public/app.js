@@ -5,6 +5,8 @@ let map;
 let radarMap;
 let overlay;
 let radarOverlay;
+let radarAnimationTimer;
+let radarAnimationIndex = 0;
 let activePeriod = "24";
 let activeRateInterval = 20;
 let rateHistoryRequestId = 0;
@@ -29,6 +31,7 @@ const els = {
   weatherStation: document.querySelector("#weatherStation"),
   dailyWeather: document.querySelector("#dailyWeather"),
   radarTime: document.querySelector("#radarTime"),
+  radarFrameTime: document.querySelector("#radarFrameTime"),
   forecast: document.querySelector("#forecastTimeline"),
   forecastPeak: document.querySelector("#forecastPeak"),
   trends: document.querySelector("#trendCards"),
@@ -291,14 +294,48 @@ function renderWeather(weather) {
 
 function renderRadar(radar) {
   if (!radar || !radarMap) return;
-  els.radarTime.textContent = radar.updatedAt
-    ? `Radar ${new Date(radar.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-    : "NOAA radar";
+  const frames = (radar.frames || []).filter((frame) => frame.rasterId && frame.time);
+  if (radarAnimationTimer) {
+    clearInterval(radarAnimationTimer);
+    radarAnimationTimer = null;
+  }
+  els.radarTime.textContent = frames.length > 1
+    ? `Animating ${frames.length} frames`
+    : radar.updatedAt
+      ? `Radar ${new Date(radar.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      : "NOAA radar";
+  radarAnimationIndex = 0;
+  if (frames.length) {
+    showRadarFrame(frames[radarAnimationIndex]);
+    if (frames.length > 1) {
+      radarAnimationTimer = setInterval(() => {
+        radarAnimationIndex = (radarAnimationIndex + 1) % frames.length;
+        showRadarFrame(frames[radarAnimationIndex]);
+      }, 1200);
+    }
+    return;
+  }
+  showRadarFrame({
+    time: radar.validTime,
+    validTime: radar.updatedAt,
+    rasterId: null
+  });
+}
+
+function showRadarFrame(frame) {
   const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(68000);
   if (radarOverlay) radarOverlay.remove();
-  const radarTime = radar.validTime ? `time=${encodeURIComponent(radar.validTime)}&` : "";
-  radarOverlay = L.imageOverlay(`/api/radar-image?${radarTime}t=${Date.now()}`, bounds, { opacity: 0.72, interactive: false });
+  const params = new URLSearchParams({ t: String(Date.now()) });
+  if (frame?.rasterId) params.set("rasterId", String(frame.rasterId));
+  else if (frame?.time) params.set("time", String(frame.time));
+  radarOverlay = L.imageOverlay(`/api/radar-image?${params}`, bounds, { opacity: 0.72, interactive: false });
   radarOverlay.addTo(radarMap);
+  const frameDate = frame?.validTime ? new Date(frame.validTime) : frame?.time ? new Date(frame.time) : null;
+  if (els.radarFrameTime) {
+    els.radarFrameTime.textContent = frameDate
+      ? frameDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : "NOAA radar";
+  }
 }
 
 function projectedRainLabel(day) {
