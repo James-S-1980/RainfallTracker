@@ -78,19 +78,61 @@ async function loadRateHistory(refresh = false) {
   const requestId = rateHistoryRequestId + 1;
   rateHistoryRequestId = requestId;
   const slowNote = activeRateInterval <= 5 ? " This can take a few minutes the first time." : "";
-  els.rateHistory.innerHTML = `<p class="emptyForecast">Loading ${activeRateInterval}-minute rain-rate history.${slowNote}</p>`;
+  renderRateHistoryProgress(0, 1, activeRateInterval, slowNote);
   try {
-    const params = new URLSearchParams({ interval: String(activeRateInterval) });
-    if (refresh) params.set("refresh", "1");
-    const response = await fetch(`/api/rain-rate-history?${params}`);
-    if (!response.ok) throw new Error("Rain-rate history is unavailable");
+    const planResponse = await fetch(`/api/rain-rate-history-plan?interval=${encodeURIComponent(activeRateInterval)}`);
+    if (!planResponse.ok) throw new Error("Rain-rate history is unavailable");
     if (requestId !== rateHistoryRequestId) return;
-    renderRateHistory(await response.json());
+    const plan = await planResponse.json();
+    const samples = await loadRateHistorySamples(plan.samples || [], requestId, refresh, plan.intervalMinutes || activeRateInterval);
+    if (requestId !== rateHistoryRequestId || !samples) return;
+    renderRateHistory({ ...plan, samples });
   } catch (error) {
     if (requestId !== rateHistoryRequestId) return;
     els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
     if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
   }
+}
+
+async function loadRateHistorySamples(plannedSamples, requestId, refresh, intervalMinutes) {
+  const samples = new Array(plannedSamples.length);
+  let completed = 0;
+  let next = 0;
+  const workerCount = Math.min(intervalMinutes <= 5 ? 2 : 3, plannedSamples.length);
+  renderRateHistoryProgress(0, plannedSamples.length, intervalMinutes);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next < plannedSamples.length) {
+      if (requestId !== rateHistoryRequestId) return;
+      const index = next;
+      next += 1;
+      const params = new URLSearchParams({ file: plannedSamples[index].file });
+      if (refresh) params.set("refresh", "1");
+      const response = await fetch(`/api/rain-rate-sample?${params}`);
+      if (!response.ok) throw new Error("Rain-rate sample is unavailable");
+      samples[index] = await response.json();
+      completed += 1;
+      if (requestId === rateHistoryRequestId) {
+        renderRateHistoryProgress(completed, plannedSamples.length, intervalMinutes);
+      }
+    }
+  });
+  await Promise.all(workers);
+  return requestId === rateHistoryRequestId ? samples : null;
+}
+
+function renderRateHistoryProgress(completed, total, intervalMinutes, note = "") {
+  const safeTotal = Math.max(1, total);
+  const percent = Math.round((completed / safeTotal) * 100);
+  if (els.rateHistoryUpdated) {
+    els.rateHistoryUpdated.textContent = `${intervalMinutes}m samples; ${percent}% loaded`;
+  }
+  els.rateHistory.innerHTML = `<div class="rateProgress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+    <div class="rateProgressText">
+      <strong>${percent}%</strong>
+      <span>${completed} of ${total} samples loaded${escapeHtml(note)}</span>
+    </div>
+    <div class="rateProgressTrack"><i style="width:${percent}%"></i></div>
+  </div>`;
 }
 
 function renderCurrent(current) {

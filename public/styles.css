@@ -204,6 +204,52 @@ h3 {
   overflow-x: auto;
 }
 
+.rateProgress {
+  grid-column: 1 / -1;
+  align-self: center;
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fafcf9;
+}
+
+.rateProgressText {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rateProgressText strong {
+  color: var(--ink);
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+.rateProgressText span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.rateProgressTrack {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #dfe6df;
+}
+
+.rateProgressTrack i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--blue), var(--green));
+  transition: width 180ms ease;
+}
+
 .rateBar {
   min-width: 54px;
   height: 184px;
@@ -910,6 +956,15 @@ h3 {
 
   .rateInterval {
     width: 100%;
+  }
+
+  .rateProgressText {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .rateProgressText span {
+    text-align: left;
   }
 
   .metrics {

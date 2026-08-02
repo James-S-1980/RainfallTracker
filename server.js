@@ -39,6 +39,7 @@ let weatherCacheAt = 0;
 let radarCache = null;
 let radarCacheAt = 0;
 const rainRateHistoryCaches = new Map();
+const rainRateSampleCache = new Map();
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const TWO_MINUTES = 2 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
@@ -208,6 +209,10 @@ function parseRateHistoryInterval(value) {
   return RATE_HISTORY_INTERVALS.has(interval) ? interval : DEFAULT_RATE_HISTORY_INTERVAL_MINUTES;
 }
 
+function isValidPrecipRateFile(file) {
+  return /^MRMS_PrecipRate_00\.00_\d{8}-\d{6}\.grib2\.gz$/.test(file || "");
+}
+
 function pickRateHistoryFiles(files, intervalMinutes) {
   const dated = files
     .map((file) => ({ file, time: parseRapidMrmsTime(file) }))
@@ -260,15 +265,7 @@ async function getRainRateHistory(force = false, intervalMinutes = DEFAULT_RATE_
   }
   const files = await getRapidMrmsFiles("PrecipRate");
   const selected = pickRateHistoryFiles(files, intervalMinutes);
-  const samples = await mapWithConcurrency(selected, intervalMinutes <= 5 ? 2 : 3, async ({ file }) => {
-    const sample = await sampleRapidMrmsProduct("PrecipRate", file);
-    return {
-      time: sample.validTime,
-      file,
-      inchesPerHour: sample.rawMillimeters === null ? null : Number((sample.rawMillimeters / 25.4).toFixed(3)),
-      rawMillimetersPerHour: sample.rawMillimeters
-    };
-  });
+  const samples = await mapWithConcurrency(selected, intervalMinutes <= 5 ? 2 : 3, ({ file }) => getRainRateSample(file, force));
   const payload = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
@@ -281,6 +278,42 @@ async function getRainRateHistory(force = false, intervalMinutes = DEFAULT_RATE_
     samples
   };
   rainRateHistoryCaches.set(intervalMinutes, { payload, fetchedAtMs: Date.now() });
+  return payload;
+}
+
+async function getRainRateHistoryPlan(intervalMinutes) {
+  const files = await getRapidMrmsFiles("PrecipRate");
+  const selected = pickRateHistoryFiles(files, intervalMinutes);
+  return {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    source: "NOAA MRMS direct 2-minute PrecipRate",
+    units: "inches per hour",
+    updatedAt: selected.at(-1)?.time || new Date().toISOString(),
+    intervalMinutes,
+    supportedIntervals: [...RATE_HISTORY_INTERVALS],
+    hours: 2,
+    samples: selected.map(({ file, time }) => ({ file, time }))
+  };
+}
+
+async function getRainRateSample(file, force = false) {
+  if (!isValidPrecipRateFile(file)) {
+    throw new Error("Invalid rain-rate sample file");
+  }
+  const cached = rainRateSampleCache.get(file);
+  if (!force && cached) return cached;
+  const sample = await sampleRapidMrmsProduct("PrecipRate", file);
+  const payload = {
+    time: sample.validTime,
+    file,
+    inchesPerHour: sample.rawMillimeters === null ? null : Number((sample.rawMillimeters / 25.4).toFixed(3)),
+    rawMillimetersPerHour: sample.rawMillimeters
+  };
+  rainRateSampleCache.set(file, payload);
+  if (rainRateSampleCache.size > 240) {
+    rainRateSampleCache.delete(rainRateSampleCache.keys().next().value);
+  }
   return payload;
 }
 
@@ -801,6 +834,13 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/rain-rate-history") {
       const interval = parseRateHistoryInterval(url.searchParams.get("interval"));
       return json(res, 200, await getRainRateHistory(url.searchParams.get("refresh") === "1", interval));
+    }
+    if (url.pathname === "/api/rain-rate-history-plan") {
+      const interval = parseRateHistoryInterval(url.searchParams.get("interval"));
+      return json(res, 200, await getRainRateHistoryPlan(interval));
+    }
+    if (url.pathname === "/api/rain-rate-sample") {
+      return json(res, 200, await getRainRateSample(url.searchParams.get("file"), url.searchParams.get("refresh") === "1"));
     }
     if (url.pathname === "/api/forecast") return json(res, 200, await getRainForecast(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/weather") return json(res, 200, await getWeatherReport(url.searchParams.get("refresh") === "1"));
