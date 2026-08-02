@@ -349,6 +349,10 @@ h3 {
   background: #dfe9ec;
 }
 
+.radarFrame .leaflet-image-layer {
+  transition: opacity 0.45s linear;
+}
+
 .radarBadge {
   position: absolute;
   left: 14px;

@@ -8,6 +8,7 @@ let overlay;
 let radarOverlay;
 let radarAnimationTimer;
 let radarAnimationIndex = 0;
+let radarAnimationStamp = Date.now();
 let activePeriod = "24";
 let activeRateInterval = 20;
 let rateHistoryRequestId = 0;
@@ -300,6 +301,7 @@ function renderRadar(radar) {
     clearInterval(radarAnimationTimer);
     radarAnimationTimer = null;
   }
+  radarAnimationStamp = Date.now();
   els.radarTime.textContent = frames.length > 1
     ? `Animating ${frames.length} frames`
     : radar.updatedAt
@@ -325,15 +327,29 @@ function renderRadar(radar) {
 
 function showRadarFrame(frame) {
   const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(RADAR_VIEW_METERS);
-  if (radarOverlay) radarOverlay.remove();
   const params = new URLSearchParams({
     radius: String(Math.round(RADAR_VIEW_METERS / 2)),
-    t: String(Date.now())
+    t: String(radarAnimationStamp)
   });
   if (frame?.rasterId) params.set("rasterId", String(frame.rasterId));
   else if (frame?.time) params.set("time", String(frame.time));
-  radarOverlay = L.imageOverlay(`/api/radar-image?${params}`, bounds, { opacity: 0.72, interactive: false });
-  radarOverlay.addTo(radarMap);
+  const previousOverlay = radarOverlay;
+  const nextOverlay = L.imageOverlay(`/api/radar-image?${params}`, bounds, { opacity: 0, interactive: false });
+  radarOverlay = nextOverlay;
+  nextOverlay.once("load", () => {
+    nextOverlay.setOpacity(0.72);
+    if (previousOverlay && previousOverlay !== nextOverlay) {
+      previousOverlay.setOpacity(0);
+      setTimeout(() => {
+        if (previousOverlay !== radarOverlay) previousOverlay.remove();
+      }, 500);
+    }
+  });
+  nextOverlay.once("error", () => {
+    if (radarOverlay === nextOverlay) radarOverlay = previousOverlay || null;
+    nextOverlay.remove();
+  });
+  nextOverlay.addTo(radarMap);
   const frameDate = frame?.validTime ? new Date(frame.validTime) : frame?.time ? new Date(frame.time) : null;
   if (els.radarFrameTime) {
     els.radarFrameTime.textContent = frameDate
