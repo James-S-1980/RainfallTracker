@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
-    "build": "node --check server.js"
+    "build": "node --check server.js && node --check public/app.js"
   },
   "engines": {
     "node": ">=18"

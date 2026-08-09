@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>North East Calls</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/calls/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>North East Calls</h1>
+          <p id="statusLine">Loading events</p>
+        </div>
+        <button id="ingestButton" class="primary-button" type="button">Sync Public Logs</button>
+      </header>
+
+      <main class="layout">
+        <section class="calendar-panel" aria-label="Calendar">
+          <div class="calendar-toolbar">
+            <button id="prevMonth" class="icon-button" type="button" aria-label="Previous month">&#8249;</button>
+            <h2 id="monthLabel"></h2>
+            <button id="nextMonth" class="icon-button" type="button" aria-label="Next month">&#8250;</button>
+          </div>
+          <div class="filters" aria-label="Responder filters">
+            <label><input type="checkbox" value="police" checked /> Police</label>
+            <label><input type="checkbox" value="fire_ems" checked /> Fire/EMS</label>
+            <label><input type="checkbox" value="other" checked /> Other</label>
+          </div>
+          <div class="weekdays" aria-hidden="true">
+            <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+          </div>
+          <div id="calendarGrid" class="calendar-grid"></div>
+        </section>
+
+        <section class="events-panel" aria-label="Events">
+          <div class="section-heading">
+            <div>
+              <h2 id="selectedDateLabel"></h2>
+              <p id="selectedCount"></p>
+            </div>
+          </div>
+          <div id="eventList" class="event-list"></div>
+        </section>
+
+        <aside class="detail-panel" aria-label="Event detail">
+          <h2>Event Detail</h2>
+          <div id="eventMap" class="event-map" aria-label="Event location map"></div>
+          <div id="eventDetail" class="detail-empty">Select an event.</div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/calls/app.js" type="module"></script>
+  </body>
+</html>

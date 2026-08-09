@@ -84,18 +84,36 @@ async function loadRateHistory(refresh = false) {
   rateHistoryRequestId = requestId;
   const slowNote = activeRateInterval <= 5 ? " This can take a few minutes the first time." : "";
   renderRateHistoryProgress(0, 1, activeRateInterval, slowNote);
+  const progressTimer = setTimeout(() => {
+    if (requestId === rateHistoryRequestId) {
+      renderRateHistoryProgress(1, 2, activeRateInterval, " Fetching and decoding MRMS samples.");
+    }
+  }, 700);
   try {
-    const planResponse = await fetch(`/api/rain-rate-history-plan?interval=${encodeURIComponent(activeRateInterval)}`);
-    if (!planResponse.ok) throw new Error("Rain-rate history is unavailable");
+    if (activeRateInterval <= 5) {
+      const planResponse = await fetch(`/api/rain-rate-history-plan?interval=${encodeURIComponent(activeRateInterval)}`);
+      if (!planResponse.ok) throw new Error("Rain-rate history is unavailable");
+      if (requestId !== rateHistoryRequestId) return;
+      const plan = await planResponse.json();
+      const samples = await loadRateHistorySamples(plan.samples || [], requestId, refresh, plan.intervalMinutes || activeRateInterval);
+      if (requestId !== rateHistoryRequestId || !samples) return;
+      renderRateHistory({ ...plan, samples });
+      return;
+    }
+    const params = new URLSearchParams({ interval: String(activeRateInterval) });
+    if (refresh) params.set("refresh", "1");
+    const response = await fetch(`/api/rain-rate-history?${params}`);
+    if (!response.ok) throw new Error("Rain-rate history is unavailable");
     if (requestId !== rateHistoryRequestId) return;
-    const plan = await planResponse.json();
-    const samples = await loadRateHistorySamples(plan.samples || [], requestId, refresh, plan.intervalMinutes || activeRateInterval);
-    if (requestId !== rateHistoryRequestId || !samples) return;
-    renderRateHistory({ ...plan, samples });
+    const history = await response.json();
+    if (requestId !== rateHistoryRequestId) return;
+    renderRateHistory(history);
   } catch (error) {
     if (requestId !== rateHistoryRequestId) return;
     els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
     if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
+  } finally {
+    clearTimeout(progressTimer);
   }
 }
 
@@ -103,7 +121,7 @@ async function loadRateHistorySamples(plannedSamples, requestId, refresh, interv
   const samples = new Array(plannedSamples.length);
   let completed = 0;
   let next = 0;
-  const workerCount = Math.min(intervalMinutes <= 5 ? 2 : 3, plannedSamples.length);
+  const workerCount = Math.min(intervalMinutes <= 2 ? 3 : 4, plannedSamples.length);
   renderRateHistoryProgress(0, plannedSamples.length, intervalMinutes);
   const workers = Array.from({ length: workerCount }, async () => {
     while (next < plannedSamples.length) {
@@ -295,7 +313,8 @@ function renderWeather(weather) {
 }
 
 function renderRadar(radar) {
-  if (!radar || !radarMap) return;
+  if (!radar) return;
+  if (!radarMap) initRadarMap();
   const frames = (radar.frames || []).filter((frame) => frame.rasterId && frame.time);
   if (radarAnimationTimer) {
     clearInterval(radarAnimationTimer);
@@ -661,7 +680,7 @@ function initRadarMap() {
 }
 
 function updateMap(period) {
-  if (!map) return;
+  if (!map) initMap();
   activePeriod = period;
   document.querySelectorAll(".period").forEach((button) => {
     button.classList.toggle("active", button.dataset.period === period);
@@ -687,6 +706,4 @@ els.rateIntervalButtons.forEach((button) => {
 });
 
 els.refresh.addEventListener("click", () => loadRainfall(true));
-initMap();
-initRadarMap();
 loadRainfall();

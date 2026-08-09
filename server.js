@@ -1,11 +1,16 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { gunzipSync } from "node:zlib";
 import { GribMessageFactory } from "@mattnucc/gribberish";
 
 const PORT = Number(process.env.PORT || 5173);
 const PUBLIC_DIR = join(process.cwd(), "public");
+const DATA_DIR = join(process.cwd(), "data");
+const CALLS_DB_PATH = join(DATA_DIR, "calls.sqlite3");
 const ADDRESS = "227 Tournament Circle, North East, MD 21901";
 const LAT = 39.575348823737;
 const LON = -75.933586373761;
@@ -47,21 +52,90 @@ const SIX_HOURS = 6 * 60 * 60 * 1000;
 const DEFAULT_RATE_HISTORY_INTERVAL_MINUTES = 20;
 const RATE_HISTORY_INTERVALS = new Set([2, 5, 10, 20, 30]);
 const RECENT_MRMS_DAILY_DAYS = 3;
+const REMOTE_FETCH_TIMEOUT_MS = 20000;
+const RAPID_FILE_LIST_TTL_MS = 60 * 1000;
+const STATIC_CACHE_SECONDS = 300;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
 const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
 const HOURLY_FORECAST = `${FORECAST_GRID}/forecast/hourly`;
+const CALL_SOURCES = [
+  {
+    name: "North East Fire Company Live Run Log",
+    kind: "fire_ems_run_log",
+    url: "https://nefc4.com/",
+    enabled: 1,
+    agency: "North East Fire Company",
+    pageParam: null,
+    maxPages: 1
+  },
+  {
+    name: "Singerly Fire Department Live Run Log",
+    kind: "compact_run_log",
+    url: "https://singerly.com/live-run-log/",
+    enabled: 1,
+    agency: "Singerly Fire Department",
+    pageParam: "pg",
+    maxPages: 10
+  },
+  {
+    name: "Charlestown Fire Company Live Run Log",
+    kind: "firecompanies_incidents",
+    url: "https://cfc5.net/incidents",
+    enabled: 1,
+    agency: "Charlestown Fire Company",
+    pageParam: "page",
+    maxPages: 10
+  },
+  {
+    name: "Cecilton Volunteer Fire Company Live Run Log",
+    kind: "firecompanies_incidents",
+    url: "https://www.ceciltonvfd1.com/incidents",
+    enabled: 1,
+    agency: "Cecilton Volunteer Fire Company",
+    pageParam: "page",
+    maxPages: 10
+  },
+  {
+    name: "Community Fire Company of Rising Sun Live Run Log",
+    kind: "firecompanies_incidents",
+    url: "http://www.cfcrs.org/incidents",
+    enabled: 1,
+    agency: "Community Fire Company of Rising Sun",
+    pageParam: "page",
+    maxPages: 10
+  },
+  {
+    name: "Water Witch Fire Company Live Run Log",
+    kind: "compact_run_log",
+    url: "https://wwfco.com/incidents/",
+    enabled: 1,
+    agency: "Water Witch Fire Company",
+    pageParam: "page",
+    maxPages: 10
+  }
+];
+const rapidFileListCache = new Map();
+const rapidFileListInFlight = new Map();
+const rapidSampleCache = new Map();
+const rapidSampleInFlight = new Map();
+const staticFileCache = new Map();
 
-function send(res, status, body, type = "application/json") {
+function send(res, status, body, type = "application/json", headers = {}) {
   res.writeHead(status, {
     "content-type": type,
     "cache-control": "no-store",
-    "access-control-allow-origin": "*"
+    "access-control-allow-origin": "*",
+    ...headers
   });
   res.end(body);
 }
 
 function json(res, status, value) {
   send(res, status, JSON.stringify(value), "application/json; charset=utf-8");
+}
+
+function utcNow() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 function mime(file) {
@@ -75,6 +149,21 @@ function mime(file) {
   }[extname(file)] || "application/octet-stream";
 }
 
+function etagMatches(header, etag) {
+  if (!header) return false;
+  const normalizeTag = (value) => value.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+  const expected = normalizeTag(etag);
+  return String(header)
+    .split(",")
+    .some((candidate) => normalizeTag(candidate) === expected);
+}
+
+function staticCacheControl(pathname) {
+  return pathname === "/index.html"
+    ? "public, max-age=0, must-revalidate"
+    : `public, max-age=${STATIC_CACHE_SECONDS}, stale-while-revalidate=${STATIC_CACHE_SECONDS}`;
+}
+
 function formatDate(date) {
   return localDateKey(date);
 }
@@ -85,9 +174,26 @@ function addDays(date, days) {
   return copy;
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || REMOTE_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...NWS_HEADERS,
+        ...(options.headers || {})
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchJson(url) {
-  const response = await fetch(url, {
-    headers: NWS_HEADERS
+  const response = await fetchWithTimeout(url, {
+    headers: { accept: "application/json" }
   });
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText} from ${url}`);
@@ -160,9 +266,26 @@ function parseRapidMrmsTime(fileName) {
 }
 
 async function getRapidMrmsFiles(product) {
-  const html = await (await fetch(`${RAPID_MRMS}/${product}/`, { headers: NWS_HEADERS })).text();
-  const pattern = new RegExp(`MRMS_${product}[^"<> ]+\\.grib2\\.gz`, "g");
-  return [...new Set([...html.matchAll(pattern)].map((match) => match[0]))].sort();
+  const cached = rapidFileListCache.get(product);
+  if (cached && Date.now() - cached.fetchedAtMs < RAPID_FILE_LIST_TTL_MS) return cached.files;
+  if (rapidFileListInFlight.has(product)) return rapidFileListInFlight.get(product);
+  const request = (async () => {
+    const response = await fetchWithTimeout(`${RAPID_MRMS}/${product}/`, {
+      headers: { accept: "text/html, text/plain" }
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText} from rapid MRMS ${product}`);
+    const html = await response.text();
+    const pattern = new RegExp(`MRMS_${product}[^"<> ]+\\.grib2\\.gz`, "g");
+    const files = [...new Set([...html.matchAll(pattern)].map((match) => match[0]))].sort();
+    rapidFileListCache.set(product, { files, fetchedAtMs: Date.now() });
+    return files;
+  })();
+  rapidFileListInFlight.set(product, request);
+  try {
+    return await request;
+  } finally {
+    rapidFileListInFlight.delete(product);
+  }
 }
 
 async function getLatestRapidMrmsFile(product) {
@@ -185,23 +308,39 @@ function sampleMrmsGrid(data) {
 
 async function sampleRapidMrmsProduct(product, selectedFile = null) {
   const file = selectedFile || await getLatestRapidMrmsFile(product);
-  const response = await fetch(`${RAPID_MRMS}/${product}/${file}`, { headers: NWS_HEADERS });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText} from rapid MRMS ${product}`);
-  const zipped = Buffer.from(await response.arrayBuffer());
-  const grib = gunzipSync(zipped);
-  const factory = GribMessageFactory.fromBuffer(new Uint8Array(grib));
-  const messageKey = factory.availableMessages[0];
-  if (!messageKey) throw new Error(`Rapid MRMS ${product} file did not contain a readable message`);
-  const message = factory.getMessage(messageKey);
-  const rawMillimeters = sampleMrmsGrid(message.data);
-  return {
-    product,
-    file,
-    validTime: parseRapidMrmsTime(file),
-    rawMillimeters,
-    units: message.units || "mm",
-    sourceLayer: message.varAbbrev || product
-  };
+  const cacheKey = `${product}:${file}`;
+  if (rapidSampleCache.has(cacheKey)) return rapidSampleCache.get(cacheKey);
+  if (rapidSampleInFlight.has(cacheKey)) return rapidSampleInFlight.get(cacheKey);
+  const request = (async () => {
+    const response = await fetchWithTimeout(`${RAPID_MRMS}/${product}/${file}`);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText} from rapid MRMS ${product}`);
+    const zipped = Buffer.from(await response.arrayBuffer());
+    const grib = gunzipSync(zipped);
+    const factory = GribMessageFactory.fromBuffer(new Uint8Array(grib));
+    const messageKey = factory.availableMessages[0];
+    if (!messageKey) throw new Error(`Rapid MRMS ${product} file did not contain a readable message`);
+    const message = factory.getMessage(messageKey);
+    const rawMillimeters = sampleMrmsGrid(message.data);
+    const payload = {
+      product,
+      file,
+      validTime: parseRapidMrmsTime(file),
+      rawMillimeters,
+      units: message.units || "mm",
+      sourceLayer: message.varAbbrev || product
+    };
+    rapidSampleCache.set(cacheKey, payload);
+    if (rapidSampleCache.size > 320) {
+      rapidSampleCache.delete(rapidSampleCache.keys().next().value);
+    }
+    return payload;
+  })();
+  rapidSampleInFlight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    rapidSampleInFlight.delete(cacheKey);
+  }
 }
 
 function parseRateHistoryInterval(value) {
@@ -222,11 +361,11 @@ function pickRateHistoryFiles(files, intervalMinutes) {
   const latest = dated.at(-1);
   if (!latest) return [];
   const picks = [];
+  let cursor = 0;
   for (let offset = 120; offset >= 0; offset -= intervalMinutes) {
     const target = latest.ms - offset * 60 * 1000;
-    const candidate = dated
-      .filter((entry) => entry.ms <= target)
-      .sort((a, b) => b.ms - a.ms)[0];
+    while (cursor + 1 < dated.length && dated[cursor + 1].ms <= target) cursor += 1;
+    const candidate = dated[cursor]?.ms <= target ? dated[cursor] : null;
     if (candidate && !picks.some((pick) => pick.file === candidate.file)) {
       picks.push(candidate);
     }
@@ -848,17 +987,442 @@ async function redirectRadarImage(req, res, url) {
   res.end();
 }
 
+let callsDb = null;
+
+function getCallsDb() {
+  if (callsDb) return callsDb;
+  mkdirSync(DATA_DIR, { recursive: true });
+  callsDb = new DatabaseSync(CALLS_DB_PATH);
+  initCallsDb(callsDb);
+  return callsDb;
+}
+
+function initCallsDb(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL,
+      url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_checked_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      occurred_at TEXT NOT NULL,
+      responder_type TEXT NOT NULL,
+      agency TEXT NOT NULL,
+      call_type TEXT NOT NULL,
+      location_text TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT '',
+      source_id INTEGER,
+      source_url TEXT NOT NULL,
+      source_event_id TEXT NOT NULL UNIQUE,
+      latitude REAL,
+      longitude REAL,
+      geocode_confidence TEXT,
+      geocode_display_name TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(source_id) REFERENCES sources(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_events_occurred_at ON events(occurred_at);
+    CREATE INDEX IF NOT EXISTS idx_events_responder_type ON events(responder_type);
+
+    CREATE TABLE IF NOT EXISTS ingest_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      fetched_count INTEGER NOT NULL DEFAULT 0,
+      inserted_count INTEGER NOT NULL DEFAULT 0,
+      updated_count INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      FOREIGN KEY(source_id) REFERENCES sources(id)
+    );
+  `);
+  const insertSource = db.prepare(`
+    INSERT OR IGNORE INTO sources (name, kind, url, enabled)
+    VALUES (?, ?, ?, ?)
+  `);
+  const updateSource = db.prepare(`
+    UPDATE sources SET kind = ?, url = ?, enabled = ? WHERE name = ?
+  `);
+  for (const source of CALL_SOURCES) {
+    insertSource.run(source.name, source.kind, source.url, source.enabled);
+    updateSource.run(source.kind, source.url, source.enabled, source.name);
+  }
+}
+
+function normalizeCallTimestamp(value) {
+  const match = /^(?:(Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?,?\s+)?([A-Z][a-z]+),?\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+(?:@\s*)?(\d{1,2}):(\d{2})$/.exec(value.replace(/\s+/g, " ").trim());
+  if (!match) return null;
+  const [, , monthName, day, explicitYear, hour, minute] = match;
+  const month = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"].indexOf(monthName.slice(0, 3).toLowerCase()) + 1;
+  if (!month) return null;
+  let year = Number(explicitYear || new Date().getFullYear());
+  const candidate = new Date(year, month - 1, Number(day), Number(hour), Number(minute));
+  const now = new Date();
+  if (!explicitYear && candidate.getTime() - now.getTime() > 45 * 24 * 60 * 60 * 1000) {
+    year -= 1;
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${minute}`;
+}
+
+function htmlTextItems(html) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(h[1-6]|li|p|div|section|article|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .split(/\n+/)
+    .map((item) => item.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function buildCallEvent({ sourceKey, sourceUrl, agency, occurredAt, callType, locationText, details = "" }) {
+  const sourceEventId = createHash("sha256")
+    .update(`${sourceKey}|${occurredAt}|${callType}|${locationText}`)
+    .digest("hex");
+  return {
+    occurred_at: occurredAt,
+    responder_type: /police/i.test(callType) ? "police" : "fire_ems",
+    agency,
+    call_type: callType,
+    location_text: locationText,
+    details,
+    source_url: sourceUrl,
+    source_event_id: sourceEventId
+  };
+}
+
+function parseNefcRunLog(html, source) {
+  const items = htmlTextItems(html);
+  const datePattern = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+[A-Z][a-z]{2},?\s+\d{1,2},?\s+\d{4}\s+(?:@\s*)?\d{1,2}:\d{2}$/;
+  const events = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (!datePattern.test(items[index])) continue;
+    const occurredAt = normalizeCallTimestamp(items[index]);
+    if (!occurredAt) continue;
+    const callType = items[index + 1] || "Unknown";
+    const locationText = items[index + 2] || "Unknown";
+    if (["member links", "account links"].includes(callType.toLowerCase())) continue;
+    events.push(buildCallEvent({
+      sourceKey: source.name,
+      sourceUrl: source.url,
+      agency: source.agency,
+      occurredAt,
+      callType,
+      locationText
+    }));
+  }
+  return events;
+}
+
+function parseCompactRunLog(html, source, sourceUrl) {
+  const items = htmlTextItems(html).filter((item) => !["Show Map", "Close"].includes(item));
+  const datePattern = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+[A-Z][a-z]{2}\s+\d{1,2}$/;
+  const dateTimePattern = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+[A-Z][a-z]{2}\s+\d{1,2}\s+@\s*\d{1,2}:\d{2}$/;
+  const events = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const combinedDateTime = dateTimePattern.test(items[index])
+      ? items[index]
+      : datePattern.test(items[index]) && /^@\s*\d{1,2}:\d{2}$/.test(items[index + 1] || "")
+        ? `${items[index]} ${items[index + 1]}`
+        : null;
+    if (!combinedDateTime) continue;
+    const occurredAt = normalizeCallTimestamp(combinedDateTime);
+    if (!occurredAt) continue;
+    const offset = dateTimePattern.test(items[index]) ? 1 : 2;
+    const callType = items[index + offset] || "Unknown";
+    const locationText = items[index + offset + 1] || "Unknown";
+    if (/^(home|live run log|join our|fire department)$/i.test(callType)) continue;
+    events.push(buildCallEvent({
+      sourceKey: source.name,
+      sourceUrl,
+      agency: source.agency,
+      occurredAt,
+      callType,
+      locationText
+    }));
+  }
+  return events;
+}
+
+function parseFireCompaniesIncidents(html, source, sourceUrl) {
+  const items = htmlTextItems(html).filter((item) => !["Show Map", "Close", "* * *"].includes(item));
+  const datePattern = /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+[A-Z][a-z]+,?\s+\d{1,2}\s+\d{4}\s+@\s*\d{1,2}:\d{2}$/;
+  const events = [];
+  for (let index = 0; index < items.length; index += 1) {
+    if (!datePattern.test(items[index])) continue;
+    const occurredAt = normalizeCallTimestamp(items[index]);
+    if (!occurredAt) continue;
+    let callType = "Unknown";
+    let locationText = "Unknown";
+    const details = [];
+    for (let cursor = index + 1; cursor < Math.min(items.length, index + 8); cursor += 1) {
+      const item = items[cursor];
+      if (datePattern.test(item) || /^Displaying \d+-\d+ of /i.test(item)) break;
+      if (/^Nature:\s*/i.test(item)) {
+        callType = item.replace(/^Nature:\s*/i, "").trim() || callType;
+      } else if (/^(Address|Location|City):\s*/i.test(item)) {
+        const value = item.replace(/^(Address|Location|City):\s*/i, "").trim();
+        if (value) locationText = value;
+      } else if (callType === "Unknown") {
+        callType = item;
+      } else if (locationText === "Unknown") {
+        locationText = item.replace(/\s+-\s+/g, " - ");
+      } else {
+        details.push(item);
+      }
+    }
+    events.push(buildCallEvent({
+      sourceKey: source.name,
+      sourceUrl,
+      agency: source.agency,
+      occurredAt,
+      callType,
+      locationText,
+      details: details.join(" ")
+    }));
+  }
+  return events;
+}
+
+function callSourceDefinition(sourceRow) {
+  return CALL_SOURCES.find((source) => source.name === sourceRow.name) || {
+    name: sourceRow.name,
+    kind: sourceRow.kind,
+    url: sourceRow.url,
+    enabled: sourceRow.enabled,
+    agency: sourceRow.name.replace(/\s+Live Run Log$/i, ""),
+    maxPages: 1,
+    pageParam: null
+  };
+}
+
+function pagedCallSourceUrls(source) {
+  const maxPages = Number(source.maxPages || 1);
+  if (!source.pageParam || maxPages <= 1) return [source.url];
+  return Array.from({ length: maxPages }, (_, index) => {
+    const page = index + 1;
+    if (page === 1) return source.url;
+    const url = new URL(source.url);
+    url.searchParams.set(source.pageParam, String(page));
+    return url.toString();
+  });
+}
+
+function parseCallSourceHtml(html, source, sourceUrl) {
+  if (source.kind === "fire_ems_run_log") return parseNefcRunLog(html, source);
+  if (source.kind === "compact_run_log") return parseCompactRunLog(html, source, sourceUrl);
+  if (source.kind === "firecompanies_incidents") return parseFireCompaniesIncidents(html, source, sourceUrl);
+  throw new Error(`Unsupported source kind: ${source.kind}`);
+}
+
+function shouldGeocodeCallLocation(location) {
+  const lowered = String(location || "").toLowerCase();
+  if (["withheld", "unknown", "medical", "not available"].some((term) => lowered.includes(term))) return false;
+  return /\d| road| rd| street| st| avenue| ave| drive| dr| lane| ln| highway| hwy| pike/.test(lowered);
+}
+
+async function geocodeCallLocation(location) {
+  if (process.env.DISABLE_GEOCODING === "1" || !shouldGeocodeCallLocation(location)) return null;
+  const params = new URLSearchParams({ q: `${location}, Cecil County, Maryland`, format: "jsonv2", limit: "1" });
+  try {
+    const response = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?${params}`, {
+      headers: { "user-agent": "NorthEastResponderTracker/1.0 local geocoder" }
+    });
+    if (!response.ok) return null;
+    const results = await response.json();
+    const result = results?.[0];
+    if (!result) return null;
+    const importance = Number(result.importance || 0);
+    return {
+      latitude: Number(result.lat),
+      longitude: Number(result.lon),
+      geocode_confidence: importance >= 0.5 ? "high" : importance >= 0.3 ? "medium" : "low",
+      geocode_display_name: result.display_name || ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function upsertCallEvent(db, sourceId, event) {
+  const existing = db.prepare("SELECT id FROM events WHERE source_event_id = ?").get(event.source_event_id);
+  const geo = await geocodeCallLocation(event.location_text);
+  const now = utcNow();
+  if (existing) {
+    db.prepare(`
+      UPDATE events
+      SET occurred_at = ?, responder_type = ?, agency = ?, call_type = ?, location_text = ?,
+        details = ?, source_id = ?, source_url = ?,
+        latitude = COALESCE(?, latitude), longitude = COALESCE(?, longitude),
+        geocode_confidence = COALESCE(?, geocode_confidence),
+        geocode_display_name = COALESCE(?, geocode_display_name),
+        updated_at = ?
+      WHERE source_event_id = ?
+    `).run(
+      event.occurred_at, event.responder_type, event.agency, event.call_type, event.location_text,
+      event.details, sourceId, event.source_url,
+      geo?.latitude ?? null, geo?.longitude ?? null, geo?.geocode_confidence ?? null, geo?.geocode_display_name ?? null,
+      now, event.source_event_id
+    );
+    return "updated";
+  }
+  db.prepare(`
+    INSERT INTO events (
+      occurred_at, responder_type, agency, call_type, location_text, details, source_id,
+      source_url, source_event_id, latitude, longitude, geocode_confidence,
+      geocode_display_name, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    event.occurred_at, event.responder_type, event.agency, event.call_type, event.location_text,
+    event.details, sourceId, event.source_url, event.source_event_id,
+    geo?.latitude ?? null, geo?.longitude ?? null, geo?.geocode_confidence ?? null, geo?.geocode_display_name ?? null,
+    now
+  );
+  return "inserted";
+}
+
+async function ingestCallSource(db, source) {
+  const sourceConfig = callSourceDefinition(source);
+  const startedAt = utcNow();
+  const run = db.prepare("INSERT INTO ingest_runs (source_id, started_at, status) VALUES (?, ?, ?)").run(source.id, startedAt, "running");
+  let fetched = 0;
+  let inserted = 0;
+  let updated = 0;
+  try {
+    const allEvents = [];
+    for (const sourceUrl of pagedCallSourceUrls(sourceConfig)) {
+      const response = await fetchWithTimeout(sourceUrl, {
+        headers: { "user-agent": "NorthEastResponderTracker/1.0 (+local personal use)", accept: "text/html" }
+      });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText} from ${sourceUrl}`);
+      allEvents.push(...parseCallSourceHtml(await response.text(), sourceConfig, sourceUrl));
+    }
+    const uniqueEvents = new Map(allEvents.map((event) => [event.source_event_id, event]));
+    const events = [...uniqueEvents.values()];
+    fetched = events.length;
+    for (const event of events) {
+      const result = await upsertCallEvent(db, source.id, event);
+      if (result === "inserted") inserted += 1;
+      if (result === "updated") updated += 1;
+    }
+    db.prepare("UPDATE sources SET last_checked_at = ?, last_status = ?, last_error = NULL WHERE id = ?").run(utcNow(), "ok", source.id);
+    db.prepare(`
+      UPDATE ingest_runs
+      SET finished_at = ?, status = ?, fetched_count = ?, inserted_count = ?, updated_count = ?
+      WHERE id = ?
+    `).run(utcNow(), "ok", fetched, inserted, updated, run.lastInsertRowid);
+    return { source: source.name, status: "ok", fetched, inserted, updated };
+  } catch (error) {
+    db.prepare("UPDATE sources SET last_checked_at = ?, last_status = ?, last_error = ? WHERE id = ?").run(utcNow(), "error", error.message, source.id);
+    db.prepare(`
+      UPDATE ingest_runs
+      SET finished_at = ?, status = ?, fetched_count = ?, inserted_count = ?, updated_count = ?, error = ?
+      WHERE id = ?
+    `).run(utcNow(), "error", fetched, inserted, updated, error.message, run.lastInsertRowid);
+    return { source: source.name, status: "error", error: error.message };
+  }
+}
+
+function getCallEvents(url) {
+  const db = getCallsDb();
+  const clauses = [];
+  const values = [];
+  const date = url.searchParams.get("date");
+  const month = url.searchParams.get("month");
+  const types = url.searchParams.getAll("type").filter(Boolean);
+  if (date) {
+    clauses.push("date(occurred_at) = ?");
+    values.push(date);
+  }
+  if (month) {
+    clauses.push("substr(occurred_at, 1, 7) = ?");
+    values.push(month);
+  }
+  if (types.length) {
+    clauses.push(`responder_type IN (${types.map(() => "?").join(",")})`);
+    values.push(...types);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db.prepare(`
+    SELECT e.*, s.name AS source_name
+    FROM events e
+    LEFT JOIN sources s ON s.id = e.source_id
+    ${where}
+    ORDER BY occurred_at DESC
+    LIMIT 1000
+  `).all(...values);
+}
+
+function getCallStats() {
+  const db = getCallsDb();
+  const total = db.prepare("SELECT COUNT(*) AS count FROM events").get().count;
+  const latest = db.prepare("SELECT occurred_at FROM events ORDER BY occurred_at DESC LIMIT 1").get();
+  const byType = db.prepare("SELECT responder_type, COUNT(*) AS count FROM events GROUP BY responder_type").all();
+  return {
+    total_events: total,
+    latest_event_at: latest?.occurred_at || null,
+    by_type: byType
+  };
+}
+
+async function routeCallsApi(req, res, url) {
+  const db = getCallsDb();
+  if (req.method === "GET" && url.pathname === "/api/calls/events") return json(res, 200, getCallEvents(url));
+  if (req.method === "GET" && url.pathname === "/api/calls/sources") return json(res, 200, db.prepare("SELECT * FROM sources ORDER BY name").all());
+  if (req.method === "GET" && url.pathname === "/api/calls/stats") return json(res, 200, getCallStats());
+  if (req.method === "POST" && url.pathname === "/api/calls/ingest/run") {
+    const sources = db.prepare("SELECT * FROM sources WHERE enabled = 1").all();
+    return json(res, 200, { results: await Promise.all(sources.map((source) => ingestCallSource(db, source))) });
+  }
+  return json(res, 404, { error: "Calls API route not found" });
+}
+
 async function serveStatic(req, res, url) {
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/index.html";
+  if (pathname.endsWith("/")) pathname += "index.html";
   const file = normalize(join(PUBLIC_DIR, pathname));
   if (!file.startsWith(PUBLIC_DIR)) {
     send(res, 403, "Forbidden", "text/plain; charset=utf-8");
     return;
   }
   try {
-    const body = await readFile(file);
-    send(res, 200, body, mime(file));
+    const info = await stat(file);
+    const etag = `"${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}"`;
+    const cacheControl = staticCacheControl(pathname);
+    if (etagMatches(req.headers["if-none-match"], etag)) {
+      res.writeHead(304, {
+        "cache-control": cacheControl,
+        etag,
+        "access-control-allow-origin": "*"
+      });
+      res.end();
+      return;
+    }
+    const cached = staticFileCache.get(file);
+    const body = cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size
+      ? cached.body
+      : await readFile(file);
+    if (!cached || cached.mtimeMs !== info.mtimeMs || cached.size !== info.size) {
+      staticFileCache.set(file, { body, mtimeMs: info.mtimeMs, size: info.size });
+    }
+    send(res, 200, body, mime(file), {
+      "cache-control": cacheControl,
+      etag
+    });
   } catch {
     send(res, 404, "Not found", "text/plain; charset=utf-8");
   }
@@ -867,6 +1431,7 @@ async function serveStatic(req, res, url) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
+    if (url.pathname.startsWith("/api/calls/")) return routeCallsApi(req, res, url);
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/rain-rate-history") {
       const interval = parseRateHistoryInterval(url.searchParams.get("interval"));
