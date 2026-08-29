@@ -1,5 +1,4 @@
 const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
-const RADAR_VIEW_METERS = 160000;
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let map;
@@ -9,6 +8,9 @@ let radarOverlay;
 let radarAnimationTimer;
 let radarAnimationIndex = 0;
 let radarAnimationStamp = Date.now();
+let radarCurrentFrame = null;
+let radarViewportTimer = null;
+let mapViewportTimer = null;
 let activePeriod = "24";
 let activeRateInterval = 20;
 let rateHistoryRequestId = 0;
@@ -297,10 +299,10 @@ function renderWeather(weather) {
   els.dailyWeather.innerHTML = (weather.daily || []).map((day) => {
     const rain = projectedRainLabel(day);
     return `<article class="weatherDay" data-risk="${forecastRisk(day.precipitationProbability || 0)}">
-      ${day.icon ? `<img src="${escapeHtml(day.icon)}" alt="${escapeHtml(day.summary || "Weather icon")}" loading="lazy">` : ""}
+      ${weatherVisualHtml(day)}
       <div>
         <strong>${formatDayName(day.date)}</strong>
-        <span>${escapeHtml(day.summary || "--")}</span>
+        <span>${weatherPartSummary(day)}</span>
       </div>
       <dl>
         <div><dt>High</dt><dd>${day.high ?? "--"}F</dd></div>
@@ -310,6 +312,31 @@ function renderWeather(weather) {
       </dl>
     </article>`;
   }).join("");
+}
+
+function weatherVisualHtml(day) {
+  const parts = (day.dayParts || []).slice(0, 2);
+  const visualParts = parts.length ? parts : [{
+    label: "Day",
+    summary: day.visualSummary || day.summary || "Forecast",
+    kind: day.visualKind || "cloudy",
+    precipitationProbability: day.precipitationProbability || 0
+  }];
+  return `<div class="weatherVisual" aria-label="${weatherPartSummary(day)}">
+    ${visualParts.map((part) => `<div class="weatherPart" data-kind="${escapeHtml(part.kind || "cloudy")}">
+      <i></i>
+      <b>${escapeHtml(part.label || "Day")}</b>
+      <span>${escapeHtml(part.summary || "--")}</span>
+    </div>`).join("")}
+  </div>`;
+}
+
+function weatherPartSummary(day) {
+  const parts = (day.dayParts || []).slice(0, 2);
+  if (!parts.length) return escapeHtml(day.visualSummary || day.summary || "--");
+  return parts
+    .map((part) => `${part.label || "Day"}: ${part.summary || "--"}`)
+    .join(" / ");
 }
 
 function renderRadar(radar) {
@@ -345,9 +372,16 @@ function renderRadar(radar) {
 }
 
 function showRadarFrame(frame) {
-  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(RADAR_VIEW_METERS);
+  radarCurrentFrame = frame;
+  const bounds = radarMap.getBounds().pad(0.08);
+  const size = radarMap.getSize();
   const params = new URLSearchParams({
-    radius: String(Math.round(RADAR_VIEW_METERS / 2)),
+    west: String(bounds.getWest()),
+    south: String(bounds.getSouth()),
+    east: String(bounds.getEast()),
+    north: String(bounds.getNorth()),
+    width: String(Math.max(600, Math.round(size.x || 1000))),
+    height: String(Math.max(400, Math.round(size.y || 700))),
     t: String(radarAnimationStamp)
   });
   if (frame?.rasterId) params.set("rasterId", String(frame.rasterId));
@@ -375,6 +409,12 @@ function showRadarFrame(frame) {
       ? frameDate.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
       : "NOAA radar";
   }
+}
+
+function refreshRadarViewport() {
+  if (!radarMap || !radarCurrentFrame) return;
+  if (radarViewportTimer) clearTimeout(radarViewportTimer);
+  radarViewportTimer = setTimeout(() => showRadarFrame(radarCurrentFrame), 180);
 }
 
 function projectedRainLabel(day) {
@@ -660,14 +700,15 @@ function initMap() {
 
   const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(map).bindPopup("227 Tournament Circle");
+  map.on("moveend zoomend resize", refreshStormMapViewport);
 }
 
 function initRadarMap() {
   radarMap = L.map("radarMap", {
-    zoomControl: false,
+    zoomControl: true,
     dragging: true,
-    scrollWheelZoom: false,
-    doubleClickZoom: false
+    scrollWheelZoom: true,
+    doubleClickZoom: true
   }).setView([HOME.lat, HOME.lon], 8);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -677,6 +718,7 @@ function initRadarMap() {
 
   const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(radarMap).bindPopup("227 Tournament Circle");
+  radarMap.on("moveend zoomend resize", refreshRadarViewport);
 }
 
 function updateMap(period) {
@@ -685,10 +727,27 @@ function updateMap(period) {
   document.querySelectorAll(".period").forEach((button) => {
     button.classList.toggle("active", button.dataset.period === period);
   });
-  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(56000);
+  const bounds = map.getBounds().pad(0.06);
+  const size = map.getSize();
+  const params = new URLSearchParams({
+    period,
+    west: String(bounds.getWest()),
+    south: String(bounds.getSouth()),
+    east: String(bounds.getEast()),
+    north: String(bounds.getNorth()),
+    width: String(Math.max(600, Math.round(size.x || 1000))),
+    height: String(Math.max(400, Math.round(size.y || 700))),
+    t: String(Date.now())
+  });
   if (overlay) overlay.remove();
-  overlay = L.imageOverlay(`/api/map-image?period=${period}&t=${Date.now()}`, bounds, { opacity: 0.58, interactive: false });
+  overlay = L.imageOverlay(`/api/map-image?${params}`, bounds, { opacity: 0.78, interactive: false });
   overlay.addTo(map);
+}
+
+function refreshStormMapViewport() {
+  if (!map) return;
+  if (mapViewportTimer) clearTimeout(mapViewportTimer);
+  mapViewportTimer = setTimeout(() => updateMap(activePeriod), 180);
 }
 
 document.querySelectorAll(".period").forEach((button) => {
