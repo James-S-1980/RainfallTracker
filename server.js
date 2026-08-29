@@ -54,6 +54,7 @@ const RATE_HISTORY_INTERVALS = new Set([2, 5, 10, 20, 30]);
 const RECENT_MRMS_DAILY_DAYS = 3;
 const REMOTE_FETCH_TIMEOUT_MS = 20000;
 const RAPID_FILE_LIST_TTL_MS = 60 * 1000;
+const STATIC_CACHE_SECONDS = 300;
 const FORECAST_GRID = "https://api.weather.gov/gridpoints/LWX/131,107";
 const DAILY_FORECAST = `${FORECAST_GRID}/forecast`;
 const HOURLY_FORECAST = `${FORECAST_GRID}/forecast/hourly`;
@@ -158,7 +159,9 @@ function etagMatches(header, etag) {
 }
 
 function staticCacheControl(pathname) {
-  return "public, max-age=0, must-revalidate";
+  return pathname === "/index.html"
+    ? "public, max-age=0, must-revalidate"
+    : `public, max-age=${STATIC_CACHE_SECONDS}, stale-while-revalidate=${STATIC_CACHE_SECONDS}`;
 }
 
 function formatDate(date) {
@@ -608,43 +611,10 @@ function extractRainAmountText(forecastText) {
   return match ? match[1] : "";
 }
 
-function weatherKind(summary, probability = 0) {
-  const text = String(summary || "").toLowerCase();
-  const rainChance = Number(probability) || 0;
-  if (/thunder|t-storm|storm/.test(text) && rainChance >= 30) return "storm";
-  if (/(rain|showers|drizzle)/.test(text) && rainChance >= 35) return "rain";
-  if (/snow|sleet|ice|freezing/.test(text)) return "snow";
-  if (/fog|haze|smoke/.test(text)) return "fog";
-  if (/cloudy|overcast/.test(text)) return "cloudy";
-  if (/partly|mostly sunny|mostly clear|few clouds/.test(text)) return "partly";
-  if (/clear|sunny/.test(text)) return "clear";
-  if (/thunder|rain|showers|drizzle/.test(text)) return "partly";
-  return "cloudy";
-}
-
-function simplifyWeatherSummary(summary, probability = 0) {
-  const text = String(summary || "").toLowerCase();
-  const rainChance = Number(probability) || 0;
-  if (/thunder|t-storm|storm/.test(text) && rainChance >= 60) return "Storms likely";
-  if (/thunder|t-storm|storm/.test(text) && rainChance >= 30) return "Storm chance";
-  if (/(rain|showers|drizzle)/.test(text) && rainChance >= 60) return "Rain likely";
-  if (/(rain|showers|drizzle)/.test(text) && rainChance >= 35) return "Showers possible";
-  if (/(rain|showers|drizzle|thunder)/.test(text) && rainChance > 0) return "Small rain chance";
-  if (/mostly sunny|mostly clear/.test(text)) return "Mostly sunny";
-  if (/partly cloudy|partly sunny/.test(text)) return "Partly cloudy";
-  if (/cloudy|overcast/.test(text)) return "Cloudy";
-  if (/fog|haze|smoke/.test(text)) return "Reduced visibility";
-  if (/snow|sleet|ice|freezing/.test(text)) return "Wintry weather";
-  if (/clear|sunny/.test(text)) return "Sunny";
-  return summary || "Forecast pending";
-}
-
 function buildDailyWeather(periods, grid) {
   const byDate = new Map();
   for (const period of periods) {
     const date = localDateKey(period.startTime);
-    const probability = Number(period.probabilityOfPrecipitation?.value || 0);
-    const simpleSummary = simplifyWeatherSummary(period.shortForecast, probability);
     const day = byDate.get(date) || {
       date,
       high: null,
@@ -653,34 +623,20 @@ function buildDailyWeather(periods, grid) {
       rainText: "",
       summary: "",
       icon: "",
-      visualKind: "",
-      visualSummary: "",
-      dayParts: [],
       periods: []
     };
     if (period.isDaytime) day.high = period.temperature;
     else day.low = period.temperature;
-    day.precipitationProbability = Math.max(day.precipitationProbability, probability);
-    day.summary = day.summary || simpleSummary;
-    day.visualKind = day.visualKind || weatherKind(period.shortForecast, probability);
-    day.visualSummary = day.visualSummary || simpleSummary;
+    day.precipitationProbability = Math.max(day.precipitationProbability, Number(period.probabilityOfPrecipitation?.value || 0));
+    day.summary = day.summary || period.shortForecast || "";
     if (period.isDaytime || !day.icon) day.icon = period.icon || day.icon;
     day.rainText = day.rainText || extractRainAmountText(period.detailedForecast);
-    day.dayParts.push({
-      label: period.isDaytime ? "Day" : "Night",
-      summary: simpleSummary,
-      kind: weatherKind(period.shortForecast, probability),
-      precipitationProbability: probability,
-      temperature: period.temperature
-    });
     day.periods.push({
       name: period.name,
       isDaytime: period.isDaytime,
       temperature: period.temperature,
       shortForecast: period.shortForecast || "",
-      simpleSummary,
-      kind: weatherKind(period.shortForecast, probability),
-      precipitationProbability: probability,
+      precipitationProbability: Number(period.probabilityOfPrecipitation?.value || 0),
       windSpeed: period.windSpeed || "",
       windDirection: period.windDirection || ""
     });
@@ -962,42 +918,6 @@ function webMercator(lon, lat) {
   return { x, y };
 }
 
-function boundedNumber(value, min, max) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : null;
-}
-
-function mapExportSize(url) {
-  const width = boundedNumber(url.searchParams.get("width"), 400, 1800) || 1000;
-  const height = boundedNumber(url.searchParams.get("height"), 300, 1400) || 1000;
-  return `${Math.round(width)},${Math.round(height)}`;
-}
-
-function viewportBbox(url, fallbackRadius) {
-  const west = boundedNumber(url.searchParams.get("west"), -180, 180);
-  const south = boundedNumber(url.searchParams.get("south"), -85, 85);
-  const east = boundedNumber(url.searchParams.get("east"), -180, 180);
-  const north = boundedNumber(url.searchParams.get("north"), -85, 85);
-  if (west !== null && south !== null && east !== null && north !== null && west < east && south < north) {
-    const southwest = webMercator(west, south);
-    const northeast = webMercator(east, north);
-    return [
-      southwest.x,
-      southwest.y,
-      northeast.x,
-      northeast.y
-    ].join(",");
-  }
-  const center = webMercator(LON, LAT);
-  const radius = Number(url.searchParams.get("radius") || fallbackRadius);
-  return [
-    center.x - radius,
-    center.y - radius,
-    center.x + radius,
-    center.y + radius
-  ].join(",");
-}
-
 async function redirectMapImage(req, res, url) {
   const period = url.searchParams.get("period") || "24";
   if (!PERIODS[period]) {
@@ -1006,13 +926,20 @@ async function redirectMapImage(req, res, url) {
   }
   const current = await getCurrentTotals();
   const selected = current.periods.find((p) => String(p.hours) === period);
-  const bbox = viewportBbox(url, 45000);
+  const center = webMercator(LON, LAT);
+  const radius = Number(url.searchParams.get("radius") || 45000);
+  const bbox = [
+    center.x - radius,
+    center.y - radius,
+    center.x + radius,
+    center.y + radius
+  ].join(",");
   const exportUrl = `${MRMS}/exportImage?${toQuery({
     f: "image",
     bbox,
     bboxSR: "102100",
     imageSR: "102100",
-    size: mapExportSize(url),
+    size: "1000,1000",
     format: "png32",
     transparent: "true",
     mosaicRule: JSON.stringify({
@@ -1032,13 +959,20 @@ async function redirectRadarImage(req, res, url) {
     ? radar.frames?.find((frame) => frame.rasterId === requestedRasterId)
     : null;
   const radarTime = selectedFrame?.time || (Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime);
-  const bbox = viewportBbox(url, 80000);
+  const center = webMercator(LON, LAT);
+  const radius = Number(url.searchParams.get("radius") || 80000);
+  const bbox = [
+    center.x - radius,
+    center.y - radius,
+    center.x + radius,
+    center.y + radius
+  ].join(",");
   const exportUrl = `${RADAR}/exportImage?${toQuery({
     f: "image",
     bbox,
     bboxSR: "102100",
     imageSR: "102100",
-    size: mapExportSize(url),
+    size: "1000,1000",
     format: "png32",
     transparent: "true",
     ...(radarTime ? { time: String(radarTime) } : {}),
