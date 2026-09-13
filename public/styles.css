@@ -167,34 +167,6 @@ h3 {
   font-weight: 800;
 }
 
-.rateInterval {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(42px, 1fr));
-  gap: 5px;
-}
-
-.rateIntervalButton {
-  min-height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fff;
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 0.74rem;
-  font-weight: 900;
-}
-
-.rateIntervalButton:hover {
-  border-color: #9facaa;
-}
-
-.rateIntervalButton.active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #fff;
-}
-
 .rateHistoryChart {
   min-height: 220px;
   padding: 18px;
@@ -1005,10 +977,6 @@ h3 {
   .rateHistoryControls {
     width: 100%;
     justify-items: stretch;
-  }
-
-  .rateInterval {
-    width: 100%;
   }
 
   .rateProgressText {

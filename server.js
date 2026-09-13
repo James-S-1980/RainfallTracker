@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { createHash } from "node:crypto";
@@ -11,6 +11,7 @@ const PORT = Number(process.env.PORT || 5173);
 const PUBLIC_DIR = join(process.cwd(), "public");
 const DATA_DIR = join(process.cwd(), "data");
 const CALLS_DB_PATH = join(DATA_DIR, "calls.sqlite3");
+const RAIN_RATE_SAMPLE_CACHE_PATH = join(DATA_DIR, "rain-rate-samples.json");
 const ADDRESS = "227 Tournament Circle, North East, MD 21901";
 const LAT = 39.575348823737;
 const LON = -75.933586373761;
@@ -45,11 +46,14 @@ let radarCache = null;
 let radarCacheAt = 0;
 const rainRateHistoryCaches = new Map();
 const rainRateSampleCache = new Map();
+let rainRateSampleCacheLoaded = false;
+let rainRateSampleCacheLoadPromise = null;
+let rainRateSampleCacheWriteTimer = null;
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 const TWO_MINUTES = 2 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const SIX_HOURS = 6 * 60 * 60 * 1000;
-const DEFAULT_RATE_HISTORY_INTERVAL_MINUTES = 20;
+const DEFAULT_RATE_HISTORY_INTERVAL_MINUTES = 5;
 const RATE_HISTORY_INTERVALS = new Set([2, 5, 10, 20, 30]);
 const RECENT_MRMS_DAILY_DAYS = 3;
 const REMOTE_FETCH_TIMEOUT_MS = 20000;
@@ -362,8 +366,10 @@ function pickRateHistoryFiles(files, intervalMinutes) {
   if (!latest) return [];
   const picks = [];
   let cursor = 0;
+  const intervalMs = intervalMinutes * 60 * 1000;
+  const latestBucket = Math.floor(latest.ms / intervalMs) * intervalMs;
   for (let offset = 120; offset >= 0; offset -= intervalMinutes) {
-    const target = latest.ms - offset * 60 * 1000;
+    const target = latestBucket - offset * 60 * 1000;
     while (cursor + 1 < dated.length && dated[cursor + 1].ms <= target) cursor += 1;
     const candidate = dated[cursor]?.ms <= target ? dated[cursor] : null;
     if (candidate && !picks.some((pick) => pick.file === candidate.file)) {
@@ -397,14 +403,75 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results;
 }
 
+function rainRateHistoryConcurrency(intervalMinutes) {
+  if (intervalMinutes <= 2) return 3;
+  if (intervalMinutes <= 5) return 6;
+  return 4;
+}
+
+async function hydrateRainRateSampleCache() {
+  if (rainRateSampleCacheLoaded) return;
+  if (rainRateSampleCacheLoadPromise) return rainRateSampleCacheLoadPromise;
+  rainRateSampleCacheLoadPromise = (async () => {
+    try {
+      const raw = await readFile(RAIN_RATE_SAMPLE_CACHE_PATH, "utf8");
+      const parsed = JSON.parse(raw);
+      const samples = Array.isArray(parsed.samples) ? parsed.samples : [];
+      for (const sample of samples) {
+        if (sample?.file && isValidPrecipRateFile(sample.file)) {
+          rainRateSampleCache.set(sample.file, sample);
+        }
+      }
+      trimRainRateSampleCache();
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        console.warn(`Unable to read rain-rate sample cache: ${error.message}`);
+      }
+    } finally {
+      rainRateSampleCacheLoaded = true;
+    }
+  })();
+  return rainRateSampleCacheLoadPromise;
+}
+
+function trimRainRateSampleCache() {
+  if (rainRateSampleCache.size <= 480) return;
+  const entries = [...rainRateSampleCache.entries()]
+    .sort(([, a], [, b]) => new Date(a.time || 0).getTime() - new Date(b.time || 0).getTime());
+  for (const [file] of entries.slice(0, rainRateSampleCache.size - 480)) {
+    rainRateSampleCache.delete(file);
+  }
+}
+
+function scheduleRainRateSampleCacheWrite() {
+  if (rainRateSampleCacheWriteTimer) return;
+  rainRateSampleCacheWriteTimer = setTimeout(async () => {
+    rainRateSampleCacheWriteTimer = null;
+    try {
+      mkdirSync(DATA_DIR, { recursive: true });
+      const samples = [...rainRateSampleCache.values()]
+        .sort((a, b) => new Date(a.time || 0).getTime() - new Date(b.time || 0).getTime())
+        .slice(-480);
+      await writeFile(RAIN_RATE_SAMPLE_CACHE_PATH, JSON.stringify({
+        version: 1,
+        savedAt: new Date().toISOString(),
+        samples
+      }));
+    } catch (error) {
+      console.warn(`Unable to write rain-rate sample cache: ${error.message}`);
+    }
+  }, 1000);
+  rainRateSampleCacheWriteTimer.unref?.();
+}
+
 async function getRainRateHistory(force = false, intervalMinutes = DEFAULT_RATE_HISTORY_INTERVAL_MINUTES) {
   const cache = rainRateHistoryCaches.get(intervalMinutes);
-  if (!force && cache && Date.now() - cache.fetchedAtMs < TEN_MINUTES) {
+  if (!force && cache && Date.now() - cache.fetchedAtMs < TWO_MINUTES) {
     return cache.payload;
   }
   const files = await getRapidMrmsFiles("PrecipRate");
   const selected = pickRateHistoryFiles(files, intervalMinutes);
-  const samples = await mapWithConcurrency(selected, intervalMinutes <= 5 ? 2 : 3, ({ file }) => getRainRateSample(file, force));
+  const samples = await mapWithConcurrency(selected, rainRateHistoryConcurrency(intervalMinutes), ({ file }) => getRainRateSample(file, force));
   const payload = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
@@ -440,8 +507,9 @@ async function getRainRateSample(file, force = false) {
   if (!isValidPrecipRateFile(file)) {
     throw new Error("Invalid rain-rate sample file");
   }
+  await hydrateRainRateSampleCache();
   const cached = rainRateSampleCache.get(file);
-  if (!force && cached) return cached;
+  if (cached) return cached;
   const sample = await sampleRapidMrmsProduct("PrecipRate", file);
   const payload = {
     time: sample.validTime,
@@ -450,9 +518,8 @@ async function getRainRateSample(file, force = false) {
     rawMillimetersPerHour: sample.rawMillimeters
   };
   rainRateSampleCache.set(file, payload);
-  if (rainRateSampleCache.size > 240) {
-    rainRateSampleCache.delete(rainRateSampleCache.keys().next().value);
-  }
+  trimRainRateSampleCache();
+  scheduleRainRateSampleCacheWrite();
   return payload;
 }
 
