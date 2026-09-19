@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Weather and Rainfall</title>
+    <link rel="preconnect" href="https://unpkg.com">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -11,7 +12,7 @@
     <main class="app">
       <section class="topbar" aria-label="Rainfall summary">
         <div>
-          <p class="eyebrow">Weather and Rainfall</p>
+          <p class="eyebrow appTitleLine"><span>Weather and Rainfall</span><span id="appVersion" class="appVersion">v--</span></p>
           <h1>227 Tournament Circle</h1>
           <p class="subhead">North East, MD 21901</p>
         </div>
@@ -37,16 +38,9 @@
         <div class="panelHead">
           <div>
             <h2>Rain Rate History</h2>
-            <p>Rapid MRMS rain-rate snapshots over the last 2 hours.</p>
+            <p>Rapid MRMS rain-rate snapshots every 5 minutes over the last 2 hours.</p>
           </div>
           <div class="rateHistoryControls">
-            <div class="rateInterval" role="group" aria-label="Rain rate sample interval">
-              <button class="rateIntervalButton" type="button" data-interval="30">30m</button>
-              <button class="rateIntervalButton active" type="button" data-interval="20">20m</button>
-              <button class="rateIntervalButton" type="button" data-interval="10">10m</button>
-              <button class="rateIntervalButton" type="button" data-interval="5">5m</button>
-              <button class="rateIntervalButton" type="button" data-interval="2">2m</button>
-            </div>
             <div class="rateHistoryUpdated" id="rateHistoryUpdated">Rate history loading</div>
           </div>
         </div>
@@ -126,15 +120,34 @@
             <div class="mapLegend" aria-label="Rainfall color legend">
               <div class="legendTitle">
                 <strong>Rainfall key</strong>
-                <span>Inches for selected period</span>
+                <span>NOAA MRMS inches</span>
               </div>
               <div class="legendScale">
                 <span class="legendItem"><i class="rain0"></i><b>0"</b></span>
-                <span class="legendItem"><i class="rain1"></i><b>0.01-0.10"</b></span>
-                <span class="legendItem"><i class="rain2"></i><b>0.10-0.50"</b></span>
-                <span class="legendItem"><i class="rain3"></i><b>0.50-1.00"</b></span>
-                <span class="legendItem"><i class="rain4"></i><b>1.00-2.00"</b></span>
-                <span class="legendItem"><i class="rain5"></i><b>2.00"+</b></span>
+                <span class="legendItem"><i class="rain1"></i><b>0.01-0.05"</b></span>
+                <span class="legendItem"><i class="rain2"></i><b>0.05-0.10"</b></span>
+                <span class="legendItem"><i class="rain3"></i><b>0.10-0.15"</b></span>
+                <span class="legendItem"><i class="rain4"></i><b>0.15-0.20"</b></span>
+                <span class="legendItem"><i class="rain5"></i><b>0.20-0.40"</b></span>
+                <span class="legendItem"><i class="rain6"></i><b>0.40-0.60"</b></span>
+                <span class="legendItem"><i class="rain7"></i><b>0.60-0.80"</b></span>
+                <span class="legendItem"><i class="rain8"></i><b>0.80-1.00"</b></span>
+                <span class="legendItem"><i class="rain9"></i><b>1.00-1.25"</b></span>
+                <span class="legendItem"><i class="rain10"></i><b>1.25-1.50"</b></span>
+                <span class="legendItem"><i class="rain11"></i><b>1.50-1.75"</b></span>
+                <span class="legendItem"><i class="rain12"></i><b>1.75-2.00"</b></span>
+                <span class="legendItem"><i class="rain13"></i><b>2.00-2.50"</b></span>
+                <span class="legendItem"><i class="rain14"></i><b>2.50-3.00"</b></span>
+                <span class="legendItem"><i class="rain15"></i><b>3.00-3.50"</b></span>
+                <span class="legendItem"><i class="rain16"></i><b>3.50-4.00"</b></span>
+                <span class="legendItem"><i class="rain17"></i><b>4.00-4.50"</b></span>
+                <span class="legendItem"><i class="rain18"></i><b>4.50-5.00"</b></span>
+                <span class="legendItem"><i class="rain19"></i><b>5.00-5.50"</b></span>
+                <span class="legendItem"><i class="rain20"></i><b>5.50-6.00"</b></span>
+                <span class="legendItem"><i class="rain21"></i><b>6.00-6.50"</b></span>
+                <span class="legendItem"><i class="rain22"></i><b>6.50-7.00"</b></span>
+                <span class="legendItem"><i class="rain23"></i><b>7.00-8.00"</b></span>
+                <span class="legendItem"><i class="rain24"></i><b>8.00"+</b></span>
               </div>
             </div>
           </div>

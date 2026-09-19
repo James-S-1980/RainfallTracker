@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+data
+.env
+npm-debug.log*
+Dockerfile
+docker-compose.yml
+.DS_Store
+Thumbs.db

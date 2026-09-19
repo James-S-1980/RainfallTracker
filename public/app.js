@@ -1,5 +1,6 @@
 const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
 const RADAR_VIEW_METERS = 160000;
+const RATE_HISTORY_INTERVAL_MINUTES = 5;
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 let map;
@@ -10,10 +11,10 @@ let radarAnimationTimer;
 let radarAnimationIndex = 0;
 let radarAnimationStamp = Date.now();
 let activePeriod = "24";
-let activeRateInterval = 20;
 let rateHistoryRequestId = 0;
 
 const els = {
+  appVersion: document.querySelector("#appVersion"),
   dot: document.querySelector("#statusDot"),
   status: document.querySelector("#statusText"),
   refresh: document.querySelector("#refreshButton"),
@@ -24,7 +25,6 @@ const els = {
   rainRateSource: document.querySelector("#rainRateSource"),
   rateHistory: document.querySelector("#rateHistoryChart"),
   rateHistoryUpdated: document.querySelector("#rateHistoryUpdated"),
-  rateIntervalButtons: document.querySelectorAll(".rateIntervalButton"),
   weatherUpdated: document.querySelector("#weatherUpdated"),
   weatherConditions: document.querySelector("#weatherConditions"),
   weatherTemp: document.querySelector("#weatherTemp"),
@@ -42,6 +42,21 @@ const els = {
   bars: document.querySelector("#monthlyBars"),
   wettest: document.querySelector("#wettestDay")
 };
+
+async function loadAppVersion() {
+  if (!els.appVersion) return;
+  try {
+    const response = await fetch("/api/version");
+    if (!response.ok) throw new Error("Version unavailable");
+    const details = await response.json();
+    els.appVersion.textContent = details.version ? `v${details.version}` : "v--";
+    if (details.name) {
+      els.appVersion.title = `${details.name} ${els.appVersion.textContent}`;
+    }
+  } catch {
+    els.appVersion.textContent = "v--";
+  }
+}
 
 function inches(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -82,47 +97,28 @@ async function loadRateHistory(refresh = false) {
   if (!els.rateHistory) return;
   const requestId = rateHistoryRequestId + 1;
   rateHistoryRequestId = requestId;
-  const slowNote = activeRateInterval <= 5 ? " This can take a few minutes the first time." : "";
-  renderRateHistoryProgress(0, 1, activeRateInterval, slowNote);
+  renderRateHistoryProgress(0, 1, RATE_HISTORY_INTERVAL_MINUTES, " Fetching 5-minute MRMS samples.");
+  const progressTimer = setTimeout(() => {
+    if (requestId === rateHistoryRequestId) {
+      renderRateHistoryProgress(1, 2, RATE_HISTORY_INTERVAL_MINUTES, " Decoding radar samples on the server.");
+    }
+  }, 700);
   try {
-    const planResponse = await fetch(`/api/rain-rate-history-plan?interval=${encodeURIComponent(activeRateInterval)}`);
-    if (!planResponse.ok) throw new Error("Rain-rate history is unavailable");
+    const params = new URLSearchParams({ interval: String(RATE_HISTORY_INTERVAL_MINUTES) });
+    if (refresh) params.set("refresh", "1");
+    const response = await fetch(`/api/rain-rate-history?${params}`);
+    if (!response.ok) throw new Error("Rain-rate history is unavailable");
     if (requestId !== rateHistoryRequestId) return;
-    const plan = await planResponse.json();
-    const samples = await loadRateHistorySamples(plan.samples || [], requestId, refresh, plan.intervalMinutes || activeRateInterval);
-    if (requestId !== rateHistoryRequestId || !samples) return;
-    renderRateHistory({ ...plan, samples });
+    const history = await response.json();
+    if (requestId !== rateHistoryRequestId) return;
+    renderRateHistory(history);
   } catch (error) {
     if (requestId !== rateHistoryRequestId) return;
     els.rateHistory.innerHTML = `<p class="emptyForecast">${escapeHtml(error.message || "Unable to load rain-rate history.")}</p>`;
     if (els.rateHistoryUpdated) els.rateHistoryUpdated.textContent = "Rapid MRMS";
+  } finally {
+    clearTimeout(progressTimer);
   }
-}
-
-async function loadRateHistorySamples(plannedSamples, requestId, refresh, intervalMinutes) {
-  const samples = new Array(plannedSamples.length);
-  let completed = 0;
-  let next = 0;
-  const workerCount = Math.min(intervalMinutes <= 5 ? 2 : 3, plannedSamples.length);
-  renderRateHistoryProgress(0, plannedSamples.length, intervalMinutes);
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (next < plannedSamples.length) {
-      if (requestId !== rateHistoryRequestId) return;
-      const index = next;
-      next += 1;
-      const params = new URLSearchParams({ file: plannedSamples[index].file });
-      if (refresh) params.set("refresh", "1");
-      const response = await fetch(`/api/rain-rate-sample?${params}`);
-      if (!response.ok) throw new Error("Rain-rate sample is unavailable");
-      samples[index] = await response.json();
-      completed += 1;
-      if (requestId === rateHistoryRequestId) {
-        renderRateHistoryProgress(completed, plannedSamples.length, intervalMinutes);
-      }
-    }
-  });
-  await Promise.all(workers);
-  return requestId === rateHistoryRequestId ? samples : null;
 }
 
 function renderRateHistoryProgress(completed, total, intervalMinutes, note = "") {
@@ -184,25 +180,72 @@ function renderRateHistory(history) {
     return;
   }
   const values = samples.map((sample) => Number(sample.inchesPerHour) || 0);
-  const max = Math.max(...values, 0.1);
+  const max = niceRateCeiling(Math.max(...values, 0.1));
   const latest = samples.at(-1);
-  els.rateHistory.style.gridTemplateColumns = `repeat(${samples.length}, minmax(62px, 1fr))`;
+  els.rateHistory.style.gridTemplateColumns = "";
   if (els.rateHistoryUpdated) {
     els.rateHistoryUpdated.textContent = latest?.time
-      ? `${history.intervalMinutes || activeRateInterval}m samples; latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+      ? `${history.intervalMinutes || RATE_HISTORY_INTERVAL_MINUTES}m samples; latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       : "Rapid MRMS";
   }
-  els.rateHistory.innerHTML = samples.map((sample) => {
+  const chart = {
+    width: 900,
+    height: 260,
+    left: 48,
+    right: 18,
+    top: 18,
+    bottom: 42
+  };
+  const plotWidth = chart.width - chart.left - chart.right;
+  const plotHeight = chart.height - chart.top - chart.bottom;
+  const pointX = (index) => chart.left + (samples.length === 1 ? 0 : (index / (samples.length - 1)) * plotWidth);
+  const pointY = (value) => chart.top + plotHeight - (Math.max(0, value) / max) * plotHeight;
+  const points = samples.map((sample, index) => {
     const value = Number(sample.inchesPerHour) || 0;
-    const height = Math.max(3, (value / max) * 100);
     const time = sample.time ? new Date(sample.time) : null;
     const label = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--";
-    return `<article class="rateBar" data-rate-level="${rateLevel(value)}" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
-      <div class="rateBarTrack"><i style="height:${height}%; background:${rateColor(value)}"></i></div>
-      <strong>${fmt.format(value)}</strong>
-      <span>${escapeHtml(label)}</span>
-    </article>`;
+    return {
+      x: pointX(index),
+      y: pointY(value),
+      value,
+      label
+    };
+  });
+  const segments = points.slice(1).map((point, index) => {
+    const previous = points[index];
+    const segmentRate = Math.max(previous.value, point.value);
+    return `<line class="rateLineSegment" x1="${previous.x.toFixed(1)}" y1="${previous.y.toFixed(1)}" x2="${point.x.toFixed(1)}" y2="${point.y.toFixed(1)}" stroke="${rateColor(segmentRate)}"></line>`;
   }).join("");
+  const markers = points.map((point) => `<circle class="ratePoint" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5.5" fill="${rateColor(point.value)}">
+    <title>${escapeHtml(point.label)}: ${inchesPerHour(point.value)}</title>
+  </circle>`).join("");
+  const labels = points
+    .map((point, index) => ({ point, index }))
+    .filter(({ index }) => index === 0 || index === points.length - 1 || index % 6 === 0)
+    .map(({ point }) => `<text class="rateAxisLabel" x="${point.x.toFixed(1)}" y="${chart.height - 10}" text-anchor="middle">${escapeHtml(point.label)}</text>`)
+    .join("");
+  els.rateHistory.innerHTML = `<figure class="rateLineChart" aria-label="Rain rate line chart for the last 2 hours">
+    <svg viewBox="0 0 ${chart.width} ${chart.height}" role="img">
+      <title>Rain rate history</title>
+      <line class="rateGridLine" x1="${chart.left}" y1="${chart.top}" x2="${chart.width - chart.right}" y2="${chart.top}"></line>
+      <line class="rateGridLine" x1="${chart.left}" y1="${chart.top + plotHeight / 2}" x2="${chart.width - chart.right}" y2="${chart.top + plotHeight / 2}"></line>
+      <line class="rateAxisLine" x1="${chart.left}" y1="${chart.top + plotHeight}" x2="${chart.width - chart.right}" y2="${chart.top + plotHeight}"></line>
+      <text class="rateAxisLabel" x="8" y="${chart.top + 4}">${fmt.format(max)}</text>
+      <text class="rateAxisLabel" x="8" y="${chart.top + plotHeight + 4}">0.00</text>
+      ${segments}
+      ${markers}
+      ${labels}
+    </svg>
+  </figure>`;
+}
+
+function niceRateCeiling(value) {
+  if (value <= 0.1) return 0.1;
+  if (value <= 0.25) return 0.25;
+  if (value <= 0.5) return 0.5;
+  if (value <= 1) return 1;
+  if (value <= 2) return 2;
+  return Math.ceil(value);
 }
 
 function rateLevel(value) {
@@ -295,7 +338,8 @@ function renderWeather(weather) {
 }
 
 function renderRadar(radar) {
-  if (!radar || !radarMap) return;
+  if (!radar) return;
+  if (!radarMap) initRadarMap();
   const frames = (radar.frames || []).filter((frame) => frame.rasterId && frame.time);
   if (radarAnimationTimer) {
     clearInterval(radarAnimationTimer);
@@ -661,7 +705,7 @@ function initRadarMap() {
 }
 
 function updateMap(period) {
-  if (!map) return;
+  if (!map) initMap();
   activePeriod = period;
   document.querySelectorAll(".period").forEach((button) => {
     button.classList.toggle("active", button.dataset.period === period);
@@ -676,17 +720,6 @@ document.querySelectorAll(".period").forEach((button) => {
   button.addEventListener("click", () => updateMap(button.dataset.period));
 });
 
-els.rateIntervalButtons.forEach((button) => {
-  button.addEventListener("click", () => {
-    activeRateInterval = Number(button.dataset.interval || 20);
-    els.rateIntervalButtons.forEach((item) => {
-      item.classList.toggle("active", item === button);
-    });
-    loadRateHistory(false);
-  });
-});
-
 els.refresh.addEventListener("click", () => loadRainfall(true));
-initMap();
-initRadarMap();
+loadAppVersion();
 loadRainfall();

@@ -48,6 +48,28 @@ button {
   text-transform: uppercase;
 }
 
+.appTitleLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.appVersion {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(47, 125, 84, 0.28);
+  border-radius: 999px;
+  background: rgba(47, 125, 84, 0.08);
+  color: var(--green);
+  font-size: 0.72rem;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: none;
+}
+
 h1, h2, p {
   margin: 0;
 }
@@ -167,40 +189,10 @@ h3 {
   font-weight: 800;
 }
 
-.rateInterval {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(42px, 1fr));
-  gap: 5px;
-}
-
-.rateIntervalButton {
-  min-height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fff;
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 0.74rem;
-  font-weight: 900;
-}
-
-.rateIntervalButton:hover {
-  border-color: #9facaa;
-}
-
-.rateIntervalButton.active {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #fff;
-}
-
 .rateHistoryChart {
   min-height: 220px;
   padding: 18px;
-  display: grid;
-  grid-template-columns: repeat(13, minmax(54px, 1fr));
-  gap: 10px;
+  display: block;
   overflow-x: auto;
 }
 
@@ -250,46 +242,42 @@ h3 {
   transition: width 180ms ease;
 }
 
-.rateBar {
-  min-width: 54px;
-  height: 184px;
-  display: grid;
-  grid-template-rows: 1fr auto auto;
-  gap: 7px;
-  align-items: end;
-  text-align: center;
+.rateLineChart {
+  min-width: 780px;
+  margin: 0;
 }
 
-.rateBarTrack {
-  width: 100%;
-  height: 128px;
-  display: flex;
-  align-items: end;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #f4f7f4;
-}
-
-.rateBarTrack i {
+.rateLineChart svg {
   display: block;
   width: 100%;
-  border-radius: 5px 5px 3px 3px;
-  background: #cfd8d0;
+  min-height: 240px;
 }
 
-.rateBar strong {
-  color: var(--ink);
-  font-size: 0.78rem;
-  line-height: 1;
+.rateGridLine {
+  stroke: #dfe6df;
+  stroke-width: 1;
 }
 
-.rateBar span {
-  color: var(--muted);
-  font-size: 0.72rem;
+.rateAxisLine {
+  stroke: #aebbb0;
+  stroke-width: 1.5;
+}
+
+.rateAxisLabel {
+  fill: var(--muted);
+  font-size: 22px;
   font-weight: 800;
-  line-height: 1;
-  white-space: nowrap;
+}
+
+.rateLineSegment {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 6;
+}
+
+.ratePoint {
+  stroke: #fff;
+  stroke-width: 3;
 }
 
 .rateLegend {
@@ -673,8 +661,8 @@ h3 {
 
 .legendScale {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px 9px;
 }
 
 .legendItem {
@@ -704,11 +692,30 @@ h3 {
 }
 
 .rain0 { background: #edf1ed; }
-.rain1 { background: #cfe8c9; }
-.rain2 { background: #78ba73; }
-.rain3 { background: #e6c94d; }
-.rain4 { background: #d7763d; }
-.rain5 { background: #9e3148; }
+.rain1 { background: #00ecec; }
+.rain2 { background: #00c8f0; }
+.rain3 { background: #00a0ff; }
+.rain4 { background: #003cff; }
+.rain5 { background: #00ff00; }
+.rain6 { background: #00dc00; }
+.rain7 { background: #00be00; }
+.rain8 { background: #008d00; }
+.rain9 { background: #ffff00; }
+.rain10 { background: #f0d200; }
+.rain11 { background: #e7b400; }
+.rain12 { background: #c87800; }
+.rain13 { background: #ffa0a0; }
+.rain14 { background: #ff3c3c; }
+.rain15 { background: #e60000; }
+.rain16 { background: #b40000; }
+.rain17 { background: #fa00ff; }
+.rain18 { background: #d900d9; }
+.rain19 { background: #a400a4; }
+.rain20 { background: #780078; }
+.rain21 { background: #ffffff; }
+.rain22 { background: #c0c0ff; }
+.rain23 { background: #c0ffff; }
+.rain24 { background: #ffffc0; }
 
 .bars {
   height: 390px;
@@ -972,10 +979,6 @@ h3 {
     grid-template-columns: repeat(12, 66px);
   }
 
-  .rateHistoryChart {
-    grid-template-columns: repeat(13, 62px);
-  }
-
   .trendCards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1001,10 +1004,6 @@ h3 {
   .rateHistoryControls {
     width: 100%;
     justify-items: stretch;
-  }
-
-  .rateInterval {
-    width: 100%;
   }
 
   .rateProgressText {
@@ -1052,7 +1051,4 @@ h3 {
     gap: 3px;
   }
 
-  .legendScale {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
