@@ -13,6 +13,7 @@ const DATA_DIR = join(process.cwd(), "data");
 const PACKAGE_PATH = join(process.cwd(), "package.json");
 const CALLS_DB_PATH = join(DATA_DIR, "calls.sqlite3");
 const RAIN_RATE_SAMPLE_CACHE_PATH = join(DATA_DIR, "rain-rate-samples.json");
+const HISTORY_CACHE_PATH = join(DATA_DIR, "history-cache.json");
 const ADDRESS = "227 Tournament Circle, North East, MD 21901";
 const LAT = 39.575348823737;
 const LON = -75.933586373761;
@@ -925,7 +926,14 @@ async function getHistory(force = false) {
     precipitation_unit: "inch",
     timezone: "America/New_York"
   })}`;
-  const data = await fetchJson(url);
+  let data;
+  try {
+    data = await fetchJson(url);
+  } catch (error) {
+    const cached = await readCachedHistory(key, error);
+    if (cached) return cached;
+    return emptyHistoryPayload(start, end, error);
+  }
   let days = (data.daily?.time || []).map((date, index) => ({
     date,
     inches: Number(data.daily.precipitation_sum?.[index] || 0),
@@ -972,7 +980,68 @@ async function getHistory(force = false) {
   };
   historyCache = { payload, fetchedAtMs: Date.now() };
   historyCacheKey = key;
+  writeCachedHistory(key, payload);
   return payload;
+}
+
+async function readCachedHistory(key, error) {
+  if (historyCache?.payload) {
+    return {
+      ...historyCache.payload,
+      stale: true,
+      warning: `Using cached rainfall history because archive data is unavailable: ${error.message}`
+    };
+  }
+  try {
+    const cached = JSON.parse(await readFile(HISTORY_CACHE_PATH, "utf8"));
+    if (cached.key !== key || !cached.payload) return null;
+    const payload = {
+      ...cached.payload,
+      stale: true,
+      warning: `Using cached rainfall history from ${cached.savedAt || "disk"} because archive data is unavailable: ${error.message}`
+    };
+    historyCache = { payload, fetchedAtMs: Date.now() };
+    historyCacheKey = key;
+    return payload;
+  } catch (cacheError) {
+    if (cacheError.code !== "ENOENT") {
+      console.warn(`Unable to read history cache: ${cacheError.message}`);
+    }
+    return null;
+  }
+}
+
+function writeCachedHistory(key, payload) {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFile(HISTORY_CACHE_PATH, JSON.stringify({
+      version: 1,
+      key,
+      savedAt: new Date().toISOString(),
+      payload
+    })).catch((error) => console.warn(`Unable to write history cache: ${error.message}`));
+  } catch (error) {
+    console.warn(`Unable to schedule history cache write: ${error.message}`);
+  }
+}
+
+function emptyHistoryPayload(start, end, error) {
+  return {
+    address: ADDRESS,
+    coordinates: { lat: LAT, lon: LON },
+    source: "Open-Meteo Archive API daily precipitation",
+    start,
+    end,
+    weekTotal: 0,
+    monthTotal: 0,
+    annualTotal: 0,
+    wettestDay: null,
+    recentMrmsOverrides: [],
+    months: [],
+    days: [],
+    stale: true,
+    warning: `Rainfall history is temporarily unavailable: ${error.message}`
+  };
 }
 
 function sum(days) {

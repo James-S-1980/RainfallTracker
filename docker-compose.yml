@@ -1,0 +1,15 @@
+services:
+  rainfall-monitor:
+    build: .
+    container_name: rainfall-monitor
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8768
+    ports:
+      - "8768:8768"
+    volumes:
+      - rainfall-monitor-data:/app/data
+
+volumes:
+  rainfall-monitor-data:
