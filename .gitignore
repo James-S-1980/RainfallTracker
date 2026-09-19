@@ -3,3 +3,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 npm-debug.log*
+
+# Local iOS build and smoke-test files
+work/
+iOS/*.xcuserstate
+iOS/xcuserdata/
+pnpm-lock.yaml
