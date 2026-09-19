@@ -10,6 +10,7 @@ import { GribMessageFactory } from "@mattnucc/gribberish";
 const PORT = Number(process.env.PORT || 5173);
 const PUBLIC_DIR = join(process.cwd(), "public");
 const DATA_DIR = join(process.cwd(), "data");
+const PACKAGE_PATH = join(process.cwd(), "package.json");
 const CALLS_DB_PATH = join(DATA_DIR, "calls.sqlite3");
 const RAIN_RATE_SAMPLE_CACHE_PATH = join(DATA_DIR, "rain-rate-samples.json");
 const ADDRESS = "227 Tournament Circle, North East, MD 21901";
@@ -44,6 +45,7 @@ let weatherCache = null;
 let weatherCacheAt = 0;
 let radarCache = null;
 let radarCacheAt = 0;
+let appVersionCache = null;
 const rainRateHistoryCaches = new Map();
 const rainRateSampleCache = new Map();
 let rainRateSampleCacheLoaded = false;
@@ -166,6 +168,16 @@ function staticCacheControl(pathname) {
   return pathname === "/index.html"
     ? "public, max-age=0, must-revalidate"
     : `public, max-age=${STATIC_CACHE_SECONDS}, stale-while-revalidate=${STATIC_CACHE_SECONDS}`;
+}
+
+async function getAppVersion() {
+  if (appVersionCache) return appVersionCache;
+  const packageJson = JSON.parse(await readFile(PACKAGE_PATH, "utf8"));
+  appVersionCache = {
+    name: packageJson.name || "rainfall-monitor",
+    version: packageJson.version || "0.0.0"
+  };
+  return appVersionCache;
 }
 
 function formatDate(date) {
@@ -1499,6 +1511,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
     if (url.pathname.startsWith("/api/calls/")) return routeCallsApi(req, res, url);
+    if (url.pathname === "/api/version") return json(res, 200, await getAppVersion());
     if (url.pathname === "/api/current") return json(res, 200, await getCurrentTotals(url.searchParams.get("refresh") === "1"));
     if (url.pathname === "/api/rain-rate-history") {
       const interval = parseRateHistoryInterval(url.searchParams.get("interval"));

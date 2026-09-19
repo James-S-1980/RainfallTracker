@@ -14,6 +14,7 @@ let activePeriod = "24";
 let rateHistoryRequestId = 0;
 
 const els = {
+  appVersion: document.querySelector("#appVersion"),
   dot: document.querySelector("#statusDot"),
   status: document.querySelector("#statusText"),
   refresh: document.querySelector("#refreshButton"),
@@ -41,6 +42,21 @@ const els = {
   bars: document.querySelector("#monthlyBars"),
   wettest: document.querySelector("#wettestDay")
 };
+
+async function loadAppVersion() {
+  if (!els.appVersion) return;
+  try {
+    const response = await fetch("/api/version");
+    if (!response.ok) throw new Error("Version unavailable");
+    const details = await response.json();
+    els.appVersion.textContent = details.version ? `v${details.version}` : "v--";
+    if (details.name) {
+      els.appVersion.title = `${details.name} ${els.appVersion.textContent}`;
+    }
+  } catch {
+    els.appVersion.textContent = "v--";
+  }
+}
 
 function inches(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
@@ -164,25 +180,72 @@ function renderRateHistory(history) {
     return;
   }
   const values = samples.map((sample) => Number(sample.inchesPerHour) || 0);
-  const max = Math.max(...values, 0.1);
+  const max = niceRateCeiling(Math.max(...values, 0.1));
   const latest = samples.at(-1);
-  els.rateHistory.style.gridTemplateColumns = `repeat(${samples.length}, minmax(62px, 1fr))`;
+  els.rateHistory.style.gridTemplateColumns = "";
   if (els.rateHistoryUpdated) {
     els.rateHistoryUpdated.textContent = latest?.time
       ? `${history.intervalMinutes || RATE_HISTORY_INTERVAL_MINUTES}m samples; latest ${new Date(latest.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
       : "Rapid MRMS";
   }
-  els.rateHistory.innerHTML = samples.map((sample) => {
+  const chart = {
+    width: 900,
+    height: 260,
+    left: 48,
+    right: 18,
+    top: 18,
+    bottom: 42
+  };
+  const plotWidth = chart.width - chart.left - chart.right;
+  const plotHeight = chart.height - chart.top - chart.bottom;
+  const pointX = (index) => chart.left + (samples.length === 1 ? 0 : (index / (samples.length - 1)) * plotWidth);
+  const pointY = (value) => chart.top + plotHeight - (Math.max(0, value) / max) * plotHeight;
+  const points = samples.map((sample, index) => {
     const value = Number(sample.inchesPerHour) || 0;
-    const height = Math.max(3, (value / max) * 100);
     const time = sample.time ? new Date(sample.time) : null;
     const label = time ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "--";
-    return `<article class="rateBar" data-rate-level="${rateLevel(value)}" title="${escapeHtml(label)}: ${inchesPerHour(value)}">
-      <div class="rateBarTrack"><i style="height:${height}%; background:${rateColor(value)}"></i></div>
-      <strong>${fmt.format(value)}</strong>
-      <span>${escapeHtml(label)}</span>
-    </article>`;
+    return {
+      x: pointX(index),
+      y: pointY(value),
+      value,
+      label
+    };
+  });
+  const segments = points.slice(1).map((point, index) => {
+    const previous = points[index];
+    const segmentRate = Math.max(previous.value, point.value);
+    return `<line class="rateLineSegment" x1="${previous.x.toFixed(1)}" y1="${previous.y.toFixed(1)}" x2="${point.x.toFixed(1)}" y2="${point.y.toFixed(1)}" stroke="${rateColor(segmentRate)}"></line>`;
   }).join("");
+  const markers = points.map((point) => `<circle class="ratePoint" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="5.5" fill="${rateColor(point.value)}">
+    <title>${escapeHtml(point.label)}: ${inchesPerHour(point.value)}</title>
+  </circle>`).join("");
+  const labels = points
+    .map((point, index) => ({ point, index }))
+    .filter(({ index }) => index === 0 || index === points.length - 1 || index % 6 === 0)
+    .map(({ point }) => `<text class="rateAxisLabel" x="${point.x.toFixed(1)}" y="${chart.height - 10}" text-anchor="middle">${escapeHtml(point.label)}</text>`)
+    .join("");
+  els.rateHistory.innerHTML = `<figure class="rateLineChart" aria-label="Rain rate line chart for the last 2 hours">
+    <svg viewBox="0 0 ${chart.width} ${chart.height}" role="img">
+      <title>Rain rate history</title>
+      <line class="rateGridLine" x1="${chart.left}" y1="${chart.top}" x2="${chart.width - chart.right}" y2="${chart.top}"></line>
+      <line class="rateGridLine" x1="${chart.left}" y1="${chart.top + plotHeight / 2}" x2="${chart.width - chart.right}" y2="${chart.top + plotHeight / 2}"></line>
+      <line class="rateAxisLine" x1="${chart.left}" y1="${chart.top + plotHeight}" x2="${chart.width - chart.right}" y2="${chart.top + plotHeight}"></line>
+      <text class="rateAxisLabel" x="8" y="${chart.top + 4}">${fmt.format(max)}</text>
+      <text class="rateAxisLabel" x="8" y="${chart.top + plotHeight + 4}">0.00</text>
+      ${segments}
+      ${markers}
+      ${labels}
+    </svg>
+  </figure>`;
+}
+
+function niceRateCeiling(value) {
+  if (value <= 0.1) return 0.1;
+  if (value <= 0.25) return 0.25;
+  if (value <= 0.5) return 0.5;
+  if (value <= 1) return 1;
+  if (value <= 2) return 2;
+  return Math.ceil(value);
 }
 
 function rateLevel(value) {
@@ -658,4 +721,5 @@ document.querySelectorAll(".period").forEach((button) => {
 });
 
 els.refresh.addEventListener("click", () => loadRainfall(true));
+loadAppVersion();
 loadRainfall();
