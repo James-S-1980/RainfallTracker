@@ -1,5 +1,4 @@
 const HOME = { lat: 39.575348823737, lon: -75.933586373761 };
-const RADAR_VIEW_METERS = 160000;
 const RATE_HISTORY_INTERVAL_MINUTES = 5;
 const fmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -10,6 +9,11 @@ let radarOverlay;
 let radarAnimationTimer;
 let radarAnimationIndex = 0;
 let radarAnimationStamp = Date.now();
+let radarCurrentFrame = null;
+let radarRenderTimer;
+let radarRenderSequence = 0;
+let mapRenderTimer;
+let mapRenderSequence = 0;
 let activePeriod = "24";
 let rateHistoryRequestId = 0;
 
@@ -370,17 +374,25 @@ function renderRadar(radar) {
 }
 
 function showRadarFrame(frame) {
-  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(RADAR_VIEW_METERS);
+  if (!radarMap) return;
+  radarCurrentFrame = frame;
+  const request = visibleMapImageRequest(radarMap, "/api/radar-image", {
+    t: radarAnimationStamp
+  });
   const params = new URLSearchParams({
-    radius: String(Math.round(RADAR_VIEW_METERS / 2)),
-    t: String(radarAnimationStamp)
+    ...request.parameters
   });
   if (frame?.rasterId) params.set("rasterId", String(frame.rasterId));
   else if (frame?.time) params.set("time", String(frame.time));
   const previousOverlay = radarOverlay;
-  const nextOverlay = L.imageOverlay(`/api/radar-image?${params}`, bounds, { opacity: 0, interactive: false });
-  radarOverlay = nextOverlay;
+  const sequence = ++radarRenderSequence;
+  const nextOverlay = L.imageOverlay(`/api/radar-image?${params}`, request.bounds, { opacity: 0, interactive: false });
   nextOverlay.once("load", () => {
+    if (sequence !== radarRenderSequence) {
+      nextOverlay.remove();
+      return;
+    }
+    radarOverlay = nextOverlay;
     nextOverlay.setOpacity(0.72);
     if (previousOverlay && previousOverlay !== nextOverlay) {
       previousOverlay.setOpacity(0);
@@ -390,7 +402,6 @@ function showRadarFrame(frame) {
     }
   });
   nextOverlay.once("error", () => {
-    if (radarOverlay === nextOverlay) radarOverlay = previousOverlay || null;
     nextOverlay.remove();
   });
   nextOverlay.addTo(radarMap);
@@ -685,14 +696,15 @@ function initMap() {
 
   const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(map).bindPopup("227 Tournament Circle");
+  map.on("moveend zoomend resize", scheduleMapUpdate);
 }
 
 function initRadarMap() {
   radarMap = L.map("radarMap", {
-    zoomControl: false,
+    zoomControl: true,
     dragging: true,
-    scrollWheelZoom: false,
-    doubleClickZoom: false
+    scrollWheelZoom: true,
+    doubleClickZoom: true
   }).setView([HOME.lat, HOME.lon], 8);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -702,6 +714,7 @@ function initRadarMap() {
 
   const homeIcon = L.divIcon({ className: "homeMarker", iconSize: [18, 18] });
   L.marker([HOME.lat, HOME.lon], { icon: homeIcon }).addTo(radarMap).bindPopup("227 Tournament Circle");
+  radarMap.on("moveend zoomend resize", scheduleRadarUpdate);
 }
 
 function updateMap(period) {
@@ -710,10 +723,52 @@ function updateMap(period) {
   document.querySelectorAll(".period").forEach((button) => {
     button.classList.toggle("active", button.dataset.period === period);
   });
-  const bounds = L.latLng(HOME.lat, HOME.lon).toBounds(56000);
-  if (overlay) overlay.remove();
-  overlay = L.imageOverlay(`/api/map-image?period=${period}&t=${Date.now()}`, bounds, { opacity: 0.58, interactive: false });
-  overlay.addTo(map);
+  const request = visibleMapImageRequest(map, "/api/map-image", { period, t: Date.now() });
+  const previousOverlay = overlay;
+  const sequence = ++mapRenderSequence;
+  const nextOverlay = L.imageOverlay(`${request.endpoint}?${new URLSearchParams(request.parameters)}`, request.bounds, { opacity: 0, interactive: false });
+  nextOverlay.once("load", () => {
+    if (sequence !== mapRenderSequence) {
+      nextOverlay.remove();
+      return;
+    }
+    overlay = nextOverlay;
+    nextOverlay.setOpacity(0.58);
+    if (previousOverlay && previousOverlay !== nextOverlay) previousOverlay.remove();
+  });
+  nextOverlay.once("error", () => nextOverlay.remove());
+  nextOverlay.addTo(map);
+}
+
+function scheduleMapUpdate() {
+  clearTimeout(mapRenderTimer);
+  mapRenderTimer = setTimeout(() => updateMap(activePeriod), 220);
+}
+
+function scheduleRadarUpdate() {
+  clearTimeout(radarRenderTimer);
+  radarRenderTimer = setTimeout(() => {
+    if (radarCurrentFrame) showRadarFrame(radarCurrentFrame);
+  }, 220);
+}
+
+function visibleMapImageRequest(mapInstance, endpoint, parameters = {}) {
+  const bounds = mapInstance.getBounds();
+  const size = mapInstance.getSize();
+  const scale = Math.min(window.devicePixelRatio || 1, 2);
+  return {
+    endpoint,
+    bounds: [[bounds.getSouth(), bounds.getWest()], [bounds.getNorth(), bounds.getEast()]],
+    parameters: {
+      ...parameters,
+      west: bounds.getWest().toFixed(6),
+      south: bounds.getSouth().toFixed(6),
+      east: bounds.getEast().toFixed(6),
+      north: bounds.getNorth().toFixed(6),
+      width: String(Math.max(256, Math.min(1800, Math.round(size.x * scale)))),
+      height: String(Math.max(256, Math.min(1800, Math.round(size.y * scale))))
+    }
+  };
 }
 
 document.querySelectorAll(".period").forEach((button) => {

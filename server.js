@@ -240,7 +240,9 @@ async function getRasterCatalog() {
 async function sampleMrmsPeriod(hours, catalog) {
   const subset = PERIODS[String(hours)];
   const raster = catalog.get(subset);
-  if (!raster) throw new Error(`NOAA MRMS raster ${subset} was not available`);
+  if (!raster) {
+    return unavailableMrmsPeriod(hours, `NOAA MRMS raster ${subset} was not available`);
+  }
 
   const geometry = JSON.stringify({
     x: LON,
@@ -272,6 +274,20 @@ async function sampleMrmsPeriod(hours, catalog) {
     ingestTime: sample?.attributes?.idp_ingestdate || raster.idp_ingestdate,
     resolutionMeters: sample?.resolution || null,
     sourceLayer: sample?.attributes?.name || subset
+  };
+}
+
+function unavailableMrmsPeriod(hours, error) {
+  return {
+    hours,
+    inches: null,
+    rawMillimeters: null,
+    rasterId: null,
+    validEndTime: null,
+    ingestTime: null,
+    resolutionMeters: null,
+    sourceLayer: PERIODS[String(hours)] || `conus_QPE_${String(hours).padStart(2, "0")}H`,
+    error
   };
 }
 
@@ -738,6 +754,11 @@ function buildQualityNotes(periods) {
     "MRMS is a radar-estimated neighborhood value, not a physical rain gauge at the house.",
     "Short-window radar totals may update before longer windows, so windows can briefly look non-monotonic."
   ];
+  for (const period of periods) {
+    if (period.error) {
+      notes.push(`${period.hours}-hour NOAA image layer is temporarily unavailable, so that total may be blank until NOAA republishes it.`);
+    }
+  }
   const validEnds = new Set(periods.map((p) => p.validEndTime).filter(Boolean));
   if (validEnds.size > 1) {
     notes.push("NOAA accumulation windows are not all ending at the same hour yet; compare totals after the next refresh.");
@@ -756,8 +777,16 @@ function buildQualityNotes(periods) {
 
 async function getCurrentTotals(force = false) {
   if (!force && currentCache && Date.now() - currentCacheAt < TWO_MINUTES) return currentCache;
-  const catalog = await getRasterCatalog();
-  const periods = await Promise.all([1, 6, 12, 24].map((h) => sampleMrmsPeriod(h, catalog)));
+  let catalog = null;
+  let catalogError = null;
+  try {
+    catalog = await getRasterCatalog();
+  } catch (error) {
+    catalogError = error;
+  }
+  let periods = catalog
+    ? await Promise.all([1, 6, 12, 24].map((h) => sampleMrmsPeriod(h, catalog)))
+    : [1, 6, 12, 24].map((h) => unavailableMrmsPeriod(h, catalogError?.message || "NOAA MRMS catalog was unavailable"));
   let rapid = null;
   try {
     rapid = await getRapidRainfall();
@@ -774,6 +803,13 @@ async function getCurrentTotals(force = false) {
   } catch (error) {
     rapid = { error: error.message || "Rapid MRMS feed was unavailable" };
   }
+  if (catalogError && currentCache?.periods?.length) {
+    periods = currentCache.periods.map((period) => ({
+      ...period,
+      stale: true,
+      error: `Using cached total because NOAA MRMS catalog is unavailable: ${catalogError.message}`
+    }));
+  }
   currentCache = {
     address: ADDRESS,
     coordinates: { lat: LAT, lon: LON },
@@ -782,7 +818,10 @@ async function getCurrentTotals(force = false) {
     units: "inches",
     periods,
     rapid,
-    qualityNotes: buildQualityNotes(periods)
+    qualityNotes: [
+      ...buildQualityNotes(periods),
+      ...(catalogError ? [`NOAA MRMS image catalog is temporarily unavailable: ${catalogError.message}`] : [])
+    ]
   };
   currentCacheAt = Date.now();
   return currentCache;
@@ -1066,6 +1105,31 @@ function webMercator(lon, lat) {
   return { x, y };
 }
 
+function requestedMapExtent(url, defaultRadius) {
+  const west = Number(url.searchParams.get("west"));
+  const south = Number(url.searchParams.get("south"));
+  const east = Number(url.searchParams.get("east"));
+  const north = Number(url.searchParams.get("north"));
+  const hasBounds = [west, south, east, north].every(Number.isFinite)
+    && west >= -180 && east <= 180 && south >= -85 && north <= 85
+    && west < east && south < north;
+
+  let bbox;
+  if (hasBounds) {
+    const lowerLeft = webMercator(west, south);
+    const upperRight = webMercator(east, north);
+    bbox = [lowerLeft.x, lowerLeft.y, upperRight.x, upperRight.y].join(",");
+  } else {
+    const center = webMercator(LON, LAT);
+    const radius = Math.max(1000, Math.min(2000000, Number(url.searchParams.get("radius")) || defaultRadius));
+    bbox = [center.x - radius, center.y - radius, center.x + radius, center.y + radius].join(",");
+  }
+
+  const width = Math.max(256, Math.min(1800, Math.round(Number(url.searchParams.get("width")) || 1000)));
+  const height = Math.max(256, Math.min(1800, Math.round(Number(url.searchParams.get("height")) || 1000)));
+  return { bbox, size: `${width},${height}` };
+}
+
 async function redirectMapImage(req, res, url) {
   const period = url.searchParams.get("period") || "24";
   if (!PERIODS[period]) {
@@ -1074,20 +1138,17 @@ async function redirectMapImage(req, res, url) {
   }
   const current = await getCurrentTotals();
   const selected = current.periods.find((p) => String(p.hours) === period);
-  const center = webMercator(LON, LAT);
-  const radius = Number(url.searchParams.get("radius") || 45000);
-  const bbox = [
-    center.x - radius,
-    center.y - radius,
-    center.x + radius,
-    center.y + radius
-  ].join(",");
+  if (!selected?.rasterId) {
+    json(res, 503, { error: `${period}-hour NOAA MRMS map layer is temporarily unavailable.` });
+    return;
+  }
+  const { bbox, size } = requestedMapExtent(url, 45000);
   const exportUrl = `${MRMS}/exportImage?${toQuery({
     f: "image",
     bbox,
     bboxSR: "102100",
     imageSR: "102100",
-    size: "1000,1000",
+    size,
     format: "png32",
     transparent: "true",
     mosaicRule: JSON.stringify({
@@ -1107,20 +1168,13 @@ async function redirectRadarImage(req, res, url) {
     ? radar.frames?.find((frame) => frame.rasterId === requestedRasterId)
     : null;
   const radarTime = selectedFrame?.time || (Number.isFinite(requestedTime) && requestedTime > 0 ? requestedTime : radar.validTime);
-  const center = webMercator(LON, LAT);
-  const radius = Number(url.searchParams.get("radius") || 80000);
-  const bbox = [
-    center.x - radius,
-    center.y - radius,
-    center.x + radius,
-    center.y + radius
-  ].join(",");
+  const { bbox, size } = requestedMapExtent(url, 80000);
   const exportUrl = `${RADAR}/exportImage?${toQuery({
     f: "image",
     bbox,
     bboxSR: "102100",
     imageSR: "102100",
-    size: "1000,1000",
+    size,
     format: "png32",
     transparent: "true",
     ...(radarTime ? { time: String(radarTime) } : {}),
